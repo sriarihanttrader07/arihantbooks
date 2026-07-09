@@ -370,7 +370,7 @@ function initGoogleDrive() {
 // ── Public sync entry point ───────────────────────────────────────────────────
 function driveSync() {
   if (!checkInternet()) { toast('No internet connection', 'error'); return; }
-  if (GDRIVE_CLIENT_ID === '39589346167-dj16dvocsedr7qbcb8hnbk10chdnef8b.apps.googleusercontent.com') {
+ if (!GDRIVE_CLIENT_ID || GDRIVE_CLIENT_ID.length < 20 || GDRIVE_CLIENT_ID.indexOf('YOUR_GOOGLE') !== -1) {
     toast('Not configured — ID reads: ' + GDRIVE_CLIENT_ID.slice(0, 20), 'error'); return;
   }
   setSyncStatus('Connecting to Google Drive...');
