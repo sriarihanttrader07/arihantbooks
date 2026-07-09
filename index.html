@@ -252,7 +252,7 @@ body.mobile-mode .mobile-sync-bar{display:flex!important}
 //    NOTE: The redirect flow does not require JavaScript origins to match —
 //    the redirect URI is what matters. Add any URL you open this file from.
 // 5. Copy your Client ID (looks like: 123456789-abc.apps.googleusercontent.com)
-// 6. Paste it into the GDRIVE_CLIENT_ID variable below (replace 39589346167-dj16dvocsedr7qbcb8hnbk10chdnef8b.apps.googleusercontent.com_HERE)
+// 6. Paste it into the GDRIVE_CLIENT_ID variable below (replace 39589346167-dj16dvocsedr7qbcb8hnbk10chdnef8b.apps.googleusercontent.com)
 // 7. Save the file and restart the server
 //
 // That's it! The "Sync to Drive" button on the desktop and the
@@ -371,7 +371,7 @@ function initGoogleDrive() {
 function driveSync() {
   if (!checkInternet()) { toast('No internet connection', 'error'); return; }
   if (GDRIVE_CLIENT_ID === '39589346167-dj16dvocsedr7qbcb8hnbk10chdnef8b.apps.googleusercontent.com') {
-    toast('Google Drive not configured — paste your Client ID into the file', 'error'); return;
+    toast('Not configured — ID reads: ' + GDRIVE_CLIENT_ID.slice(0, 20), 'error'); return;
   }
   setSyncStatus('Connecting to Google Drive...');
   if (_driveToken) { _continueSync(); return; }
