@@ -252,7 +252,7 @@ body.mobile-mode .mobile-sync-bar{display:flex!important}
 //    NOTE: The redirect flow does not require JavaScript origins to match —
 //    the redirect URI is what matters. Add any URL you open this file from.
 // 5. Copy your Client ID (looks like: 123456789-abc.apps.googleusercontent.com)
-// 6. Paste it into the GDRIVE_CLIENT_ID variable below (replace 39589346167-dj16dvocsedr7qbcb8hnbk10chdnef8b.apps.googleusercontent.com)
+// 6. Paste it into the GDRIVE_CLIENT_ID variable below (replace YOUR_GOOGLE_CLIENT_ID_HERE)
 // 7. Save the file and restart the server
 //
 // That's it! The "Sync to Drive" button on the desktop and the
@@ -370,8 +370,8 @@ function initGoogleDrive() {
 // ── Public sync entry point ───────────────────────────────────────────────────
 function driveSync() {
   if (!checkInternet()) { toast('No internet connection', 'error'); return; }
- if (!GDRIVE_CLIENT_ID || GDRIVE_CLIENT_ID.length < 20 || GDRIVE_CLIENT_ID.indexOf('YOUR_GOOGLE') !== -1) {
-    toast('Not configured — ID reads: ' + GDRIVE_CLIENT_ID.slice(0, 20), 'error'); return;
+  if (!GDRIVE_CLIENT_ID || GDRIVE_CLIENT_ID.length < 20 || GDRIVE_CLIENT_ID.indexOf('YOUR_GOOGLE') !== -1) {
+    toast('Google Drive not configured — paste your Client ID into the file', 'error'); return;
   }
   setSyncStatus('Connecting to Google Drive...');
   if (_driveToken) { _continueSync(); return; }
@@ -1164,24 +1164,32 @@ function renderProforma() {
   var all = DB.proformaInvoices || [];
   var html =
     '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">' +
-    '<input id="pi-search" placeholder="Search..." style="width:200px;padding:7px 10px;font-size:12px" oninput="redrawPI()">' +
-    '<select id="pi-status-filter" style="padding:7px 10px;font-size:12px;width:140px" onchange="redrawPI()">' +
+    fySelector('pi-fy-sel', all, 'redrawPI()') +
+    '<input id="pi-search" placeholder="Search..." style="width:160px;padding:7px 10px;font-size:12px" oninput="redrawPI()">' +
+    '<select id="pi-status-filter" style="padding:7px 10px;font-size:12px;width:130px" onchange="redrawPI()">' +
     '<option value="">All Status</option><option value="Open">Open</option><option value="Converted">Converted</option><option value="Cancelled">Cancelled</option>' +
-    '</select></div>' +
+    '</select>' +
+    '<button class="btn btn-primary mobile-only" onclick="openPIForm()" style="margin-left:auto"><i class="ti ti-plus"></i>New PI</button>' +
+    '</div>' +
     '<div id="pi-body"></div>';
   document.getElementById('content').innerHTML = html;
   drawPI();
 }
 function redrawPI() { drawPI(); }
 function drawPI() {
-  var all = (DB.proformaInvoices || []).slice().reverse();
+  var all = (DB.proformaInvoices || []);
+  var fy = (document.getElementById('pi-fy-sel')||{}).value || currentFY();
   var q = ((document.getElementById('pi-search')||{}).value||'').toLowerCase();
   var statusF = (document.getElementById('pi-status-filter')||{}).value||'';
-  var rows = all.filter(function(i){
+
+  // Filter by FY
+  var fyItems = filterFY(all, fy);
+  var rows = fyItems.filter(function(i){
     var mQ = !q || (i.number||'').toLowerCase().indexOf(q)>=0 || (i.party||'').toLowerCase().indexOf(q)>=0;
     var mS = !statusF || i.status===statusF;
     return mQ && mS;
-  });
+  }).slice().reverse();
+
   var totalVal = rows.reduce(function(s,i){ return s+(i.total||0); },0);
   var openCount = rows.filter(function(i){ return i.status==='Open'; }).length;
   var convCount = rows.filter(function(i){ return i.status==='Converted'; }).length;
@@ -1192,13 +1200,13 @@ function drawPI() {
   html += statCard('Converted to Invoice', convCount, 'converted', 'bg');
   html += '</div>';
 
-  html += '<div class="tbl-wrap"><div class="tbl-head"><span class="tbl-title">Proforma Invoices (' + rows.length + ')</span></div>';
+  html += '<div class="tbl-wrap"><div class="tbl-head"><span class="tbl-title">Proforma Invoices — FY '+esc(fy)+' ('+rows.length+')</span></div>';
   if (rows.length) {
     html += '<table><thead><tr><th>No.</th><th>Date</th><th>Customer</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
     rows.forEach(function(i){ html += piRow(i); });
     html += '</tbody></table>';
   } else {
-    html += emptyState('ti-file-description', 'No proforma invoices yet');
+    html += emptyState('ti-file-description', 'No proforma invoices for FY '+esc(fy));
   }
   html += '</div>';
   document.getElementById('pi-body').innerHTML = html;
@@ -1515,13 +1523,16 @@ function renderInvPage(type) {
   _invType = type;
   var isSales = type === 'sales';
   var all = isSales ? DB.salesInvoices : DB.purchaseBills;
+  var newBtnLabel = isSales ? 'New Invoice' : 'New Bill';
   var html =
     '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">' +
     fySelector('inv-fy-sel', all, 'redrawInvFY()') +
-    '<input id="inv-search" placeholder="Search..." style="width:180px;padding:7px 10px;font-size:12px" oninput="redrawInvFY()">' +
-    '<select id="inv-status-filter" style="padding:7px 10px;font-size:12px;width:120px" onchange="redrawInvFY()">' +
+    '<input id="inv-search" placeholder="Search..." style="width:150px;padding:7px 10px;font-size:12px" oninput="redrawInvFY()">' +
+    '<select id="inv-status-filter" style="padding:7px 10px;font-size:12px;width:110px" onchange="redrawInvFY()">' +
     '<option value="">All Status</option><option value="Unpaid">Unpaid</option><option value="Paid">Paid</option>' +
-    '</select></div>' +
+    '</select>' +
+    (!_mobileMode ? '' : '') +
+    '</div>' +
     '<div id="inv-fy-body"></div>';
   document.getElementById('content').innerHTML = html;
   drawInvFY(type);
