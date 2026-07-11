@@ -388,20 +388,37 @@ function _continueSync() {
 function checkInternet() { return navigator.onLine !== false; }
 
 // ── Drive file helpers ────────────────────────────────────────────────────────
+function _handleDriveAuth401() {
+  // Token expired — clear it and re-trigger OAuth redirect
+  _driveToken = null;
+  try { localStorage.removeItem('arihant_drive_token'); localStorage.removeItem('arihant_drive_token_expiry'); } catch(e){}
+  toast('Drive session expired — signing in again...', 'error');
+  setTimeout(function(){ _startOAuthRedirect(); }, 1500);
+}
+
 function driveListFile(name, cb) {
   fetch('https://www.googleapis.com/drive/v3/files?q=name%3D%22' + encodeURIComponent(name) + '%22+and+trashed%3Dfalse&fields=files(id,name,modifiedTime)', {
     headers: { Authorization: 'Bearer ' + _driveToken }
-  }).then(function(r){ return r.json(); }).then(function(d){
+  }).then(function(r){
+    if (r.status === 401) { _handleDriveAuth401(); cb(new Error('401'), null); return Promise.reject('401'); }
+    return r.json();
+  }).then(function(d){
+    if (d && d.error && d.error.code === 401) { _handleDriveAuth401(); cb(new Error('401'), null); return; }
     cb(null, d.files && d.files.length ? d.files[0] : null);
-  }).catch(function(e){ cb(e, null); });
+  }).catch(function(e){ if (e !== '401') cb(e, null); });
 }
 
 function driveReadFile(fileId, cb) {
   if (!fileId) { cb(null, null); return; }
   fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media', {
     headers: { Authorization: 'Bearer ' + _driveToken }
-  }).then(function(r){ return r.json(); }).then(function(d){ cb(null, d); })
-  .catch(function(e){ cb(e, null); });
+  }).then(function(r){
+    if (r.status === 401) { _handleDriveAuth401(); cb(new Error('401'), null); return Promise.reject('401'); }
+    return r.json();
+  }).then(function(d){
+    if (d && d.error && d.error.code === 401) { _handleDriveAuth401(); cb(new Error('401'), null); return; }
+    cb(null, d);
+  }).catch(function(e){ if (e !== '401') cb(e, null); });
 }
 
 function driveWriteFile(name, fileId, data, cb) {
@@ -418,8 +435,13 @@ function driveWriteFile(name, fileId, data, cb) {
     method: fileId ? 'PATCH' : 'POST',
     headers: { Authorization: 'Bearer ' + _driveToken },
     body: fd
-  }).then(function(r){ return r.json(); }).then(function(d){ cb(null, d); })
-  .catch(function(e){ cb(e, null); });
+  }).then(function(r){
+    if (r.status === 401) { _handleDriveAuth401(); cb(new Error('401'), null); return Promise.reject('401'); }
+    return r.json();
+  }).then(function(d){
+    if (d && d.error && d.error.code === 401) { _handleDriveAuth401(); cb(new Error('401'), null); return; }
+    cb(null, d);
+  }).catch(function(e){ if (e !== '401') cb(e, null); });
 }
 
 // ── DESKTOP sync flow: push full data, pull mobile queue and merge ─────────────
@@ -2926,60 +2948,50 @@ function savePayment(partyId) {
 // They show the same data with no edit/delete/create buttons.
 
 function renderMobile_sales() {
-  var all = (DB.salesInvoices||[]).slice().reverse();
-  document.getElementById('topbar-actions').innerHTML =
-    '<button class="btn btn-ghost btn-sm" onclick="mobileExportSalesPrompt()"><i class="ti ti-file-export"></i>Export</button>';
-  var html = '<div class="tbl-wrap"><div class="tbl-head"><span class="tbl-title">Sales Invoices</span></div>';
+  var html =
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap">' +
+    fySelector('mob-sales-fy', DB.salesInvoices, 'drawMobileSales()') +
+    '<input id="mob-sales-search" placeholder="Search..." style="flex:1;min-width:100px;padding:7px 10px;font-size:12px" oninput="drawMobileSales()">' +
+    '</div><div id="mob-sales-body"></div>';
+  document.getElementById('content').innerHTML = html;
+  drawMobileSales();
+}
+function drawMobileSales() {
+  var fy = (document.getElementById('mob-sales-fy')||{}).value || currentFY();
+  var q = ((document.getElementById('mob-sales-search')||{}).value||'').toLowerCase();
+  var all = filterFY(DB.salesInvoices, fy).filter(function(i){
+    return !q || (i.number||'').toLowerCase().indexOf(q)>=0 || (i.party||'').toLowerCase().indexOf(q)>=0;
+  }).slice().reverse();
+  var html = '<div class="tbl-wrap"><div class="tbl-head"><span class="tbl-title">Sales — FY '+esc(fy)+' ('+all.length+')</span></div>';
   if (all.length) {
-    html += '<div style="overflow-x:auto"><table style="min-width:420px"><thead><tr><th>No.</th><th>Date</th><th>Customer</th><th>Amount</th><th></th></tr></thead><tbody>';
+    html += '<table><thead><tr><th>No.</th><th>Date</th><th>Customer</th><th>Amount</th><th></th></tr></thead><tbody>';
     all.forEach(function(i){
-      var sc = i.status==='Paid'?'bg':'br';
       html += '<tr><td class="mono">'+esc(i.number)+'</td><td>'+fmtDateDMY(i.date)+'</td><td>'+esc(i.party)+'</td>'+
         '<td class="mono">'+fmt(i.total)+'</td>'+
         '<td><button class="btn btn-ghost btn-sm" onclick="viewInv(&quot;'+i.id+'&quot;,&quot;sales&quot;)"><i class="ti ti-eye"></i></button></td></tr>';
     });
-    html += '</tbody></table></div>';
-  } else { html += emptyState('ti-receipt','No sales invoices yet'); }
-  html += '</div>';
-  document.getElementById('content').innerHTML = html;
-}
-
-function renderMobile_inventory() {
-  var html = '<div class="tbl-wrap"><div class="tbl-head"><span class="tbl-title">Inventory</span></div>';
-  if (DB.items.length) {
-    html += '<div style="overflow-x:auto"><table style="min-width:380px"><thead><tr><th>Item</th><th>Unit</th><th style="text-align:right">Qty</th><th style="text-align:right">Sale Price</th></tr></thead><tbody>';
-    DB.items.slice().sort(function(a,b){return a.name.localeCompare(b.name);}).forEach(function(i){
-      var low = (i.reorderLevel||0)>0 && i.qty<=i.reorderLevel;
-      html += '<tr><td><strong>'+esc(i.name)+'</strong>'+(i.code?' <span class="mono" style="color:var(--text3)">'+esc(i.code)+'</span>':'')+'</td>'+
-        '<td>'+esc(i.unit)+'</td>'+
-        '<td class="mono" style="text-align:right'+(low?';color:var(--red)':'')+'">'+i.qty+(low?' ⚠':'')+'</td>'+
-        '<td class="mono" style="text-align:right">'+fmt(i.salePrice||0)+'</td></tr>';
-    });
-    html += '</tbody></table></div>';
-  } else { html += emptyState('ti-package','No items in inventory'); }
-  html += '</div>';
-  document.getElementById('content').innerHTML = html;
-}
-
-function renderMobile_parties() {
-  var html = '<div class="tbl-wrap"><div class="tbl-head"><span class="tbl-title">Parties</span></div>';
-  if (DB.parties.length) {
-    html += '<table><thead><tr><th>Name</th><th>Type</th><th>Phone</th></tr></thead><tbody>';
-    DB.parties.forEach(function(p){
-      var sc = p.type==='Customer'?'bb':p.type==='Supplier'?'ba':'bp';
-      html += '<tr><td><strong>'+esc(p.name)+'</strong></td>'+
-        '<td><span class="pill '+sc+'" style="font-size:10px">'+esc(p.type)+'</span></td>'+
-        '<td style="color:var(--text2)">'+esc(p.phone||'—')+'</td></tr>';
-    });
     html += '</tbody></table>';
-  } else { html += emptyState('ti-users','No parties yet'); }
+  } else { html += emptyState('ti-receipt','No sales invoices for FY '+esc(fy)); }
   html += '</div>';
-  document.getElementById('content').innerHTML = html;
+  document.getElementById('mob-sales-body').innerHTML = html;
 }
 
 function renderMobile_purchases() {
-  var all = (DB.purchaseBills||[]).slice().reverse();
-  var html = '<div class="tbl-wrap"><div class="tbl-head"><span class="tbl-title">Purchase Bills</span></div>';
+  var html =
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap">' +
+    fySelector('mob-purch-fy', DB.purchaseBills, 'drawMobilePurchases()') +
+    '<input id="mob-purch-search" placeholder="Search..." style="flex:1;min-width:100px;padding:7px 10px;font-size:12px" oninput="drawMobilePurchases()">' +
+    '</div><div id="mob-purch-body"></div>';
+  document.getElementById('content').innerHTML = html;
+  drawMobilePurchases();
+}
+function drawMobilePurchases() {
+  var fy = (document.getElementById('mob-purch-fy')||{}).value || currentFY();
+  var q = ((document.getElementById('mob-purch-search')||{}).value||'').toLowerCase();
+  var all = filterFY(DB.purchaseBills, fy).filter(function(i){
+    return !q || (i.number||'').toLowerCase().indexOf(q)>=0 || (i.party||'').toLowerCase().indexOf(q)>=0;
+  }).slice().reverse();
+  var html = '<div class="tbl-wrap"><div class="tbl-head"><span class="tbl-title">Purchases — FY '+esc(fy)+' ('+all.length+')</span></div>';
   if (all.length) {
     html += '<table><thead><tr><th>No.</th><th>Date</th><th>Supplier</th><th>Amount</th><th></th></tr></thead><tbody>';
     all.forEach(function(i){
@@ -2988,9 +3000,9 @@ function renderMobile_purchases() {
         '<td><button class="btn btn-ghost btn-sm" onclick="viewInv(&quot;'+i.id+'&quot;,&quot;purchases&quot;)"><i class="ti ti-eye"></i></button></td></tr>';
     });
     html += '</tbody></table>';
-  } else { html += emptyState('ti-shopping-cart','No purchase bills yet'); }
+  } else { html += emptyState('ti-shopping-cart','No purchase bills for FY '+esc(fy)); }
   html += '</div>';
-  document.getElementById('content').innerHTML = html;
+  document.getElementById('mob-purch-body').innerHTML = html;
 }
 
 function renderMobile_dashboard() {
