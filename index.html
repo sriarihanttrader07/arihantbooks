@@ -1462,32 +1462,89 @@ function viewPI(id) {
     (pi.notes ? '<div style="margin-top:14px;padding:10px 12px;background:var(--bg3);border-radius:var(--radius2);color:var(--text2);font-size:12px">Notes: ' + esc(pi.notes) + '</div>' : '') +
     termsHTML;
   var footBtns = '<button class="btn btn-ghost" onclick="closeModal()">Close</button>' +
+    '<button class="btn btn-ghost" onclick="sharePIWhatsApp(&quot;' + id + '&quot;)"><i class="ti ti-brand-whatsapp" style="color:#25D366"></i>WhatsApp</button>' +
     '<button class="btn btn-primary" onclick="exportPIPDF(&quot;' + id + '&quot;)"><i class="ti ti-file-export"></i>Export PDF</button>';
   if (pi.status === 'Open') {
     footBtns += '<button class="btn btn-success" onclick="closeModal();convertPIToInvoice(&quot;' + id + '&quot;)"><i class="ti ti-arrow-right"></i>Convert to Sales Invoice</button>';
   }
   modal('Proforma Invoice ' + pi.number, '<div id="pi-printable">' + body + '</div>', footBtns);
 }
+// ── Shared print CSS ──────────────────────────────────────────────────────────
+var PRINT_CSS =
+  ':root{--border:#d0d0d0;--bg3:#f5f5f5;--text:#1a1a1a;--text2:#555;--text3:#888;--accent:#2b5fc4;--green:#1b9e6b;--red:#c0392b}' +
+  'body{font-family:Arial,sans-serif;padding:30px;color:#1a1a1a}' +
+  'table{width:100%;border-collapse:collapse;border:1px solid #d0d0d0}' +
+  'th,td{padding:8px 12px;border:1px solid #d0d0d0}' +
+  'th{background:#f0f0f0;font-size:11px;text-transform:uppercase;text-align:left}' +
+  'hr{border:none;border-top:1px solid #d0d0d0;margin:16px 0}' +
+  '.pill{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:500;background:#eee}' +
+  '.no-print{display:none!important}' +
+  'h1{font-size:18px;margin-bottom:2px}' +
+  '.sub{color:#666;font-size:13px;margin-bottom:16px}';
+
+// ── Core share/export function ────────────────────────────────────────────────
+// On mobile: uses Web Share API to open native share sheet (WhatsApp, etc.)
+// On desktop: opens print dialog for PDF, and offers WhatsApp Web link
+function _buildPrintHTML(title, bodyHTML) {
+  return '<!DOCTYPE html><html><head><title>' + esc(title) + '</title>' +
+    '<style>' + PRINT_CSS + '</style></head><body>' + bodyHTML + '</body></html>';
+}
+
+function _openPrintWindow(title, bodyHTML) {
+  var w = window.open('', '_blank');
+  if (!w) { toast('Please allow popups for this site', 'error'); return; }
+  w.document.write(_buildPrintHTML(title, bodyHTML));
+  w.document.close();
+  setTimeout(function(){ w.print(); }, 400);
+}
+
+function _shareViaWhatsApp(title, bodyHTML, filename) {
+  var htmlContent = _buildPrintHTML(title, bodyHTML);
+  var blob = new Blob([htmlContent], { type: 'text/html' });
+  var file = new File([blob], filename, { type: 'text/html' });
+
+  // Mobile: try Web Share API with file
+  if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({
+      title: title,
+      files: [file]
+    }).then(function(){
+      toast('Shared successfully');
+    }).catch(function(e){
+      if (e.name !== 'AbortError') toast('Share failed: ' + e.message, 'error');
+    });
+    return;
+  }
+
+  // Mobile without file share support: try text share with WhatsApp deep link
+  if (navigator.share) {
+    navigator.share({ title: title, text: title + '\nFrom: ' + (DB.settings.company||'ArihantBooks') })
+    .catch(function(){});
+    return;
+  }
+
+  // Desktop fallback: download file + open WhatsApp Web
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  setTimeout(function(){
+    window.open('https://web.whatsapp.com', '_blank');
+    toast('File downloaded — attach it in the WhatsApp Web tab that just opened', 'error');
+  }, 800);
+}
+
 function exportPIPDF(id) {
   var pi = (DB.proformaInvoices||[]).find(function(x){ return x.id===id; }); if (!pi) return;
   var printable = document.getElementById('pi-printable');
   if (!printable) { toast('Nothing to export', 'error'); return; }
-  var printWin = window.open('', '_blank');
-  printWin.document.write(
-    '<html><head><title>Proforma Invoice - ' + esc(pi.number) + '</title>' +
-    '<style>' +
-    ':root{--border:#d0d0d0;--border2:#bbb;--bg3:#f5f5f5;--bg4:#eee;--text:#1a1a1a;--text2:#555;--text3:#888;--accent:#2b5fc4;--green:#1b9e6b;--red:#c0392b;--amber:#b8860b}' +
-    'body{font-family:Arial,sans-serif;padding:30px;color:#1a1a1a}' +
-    'table{width:100%;border-collapse:collapse;border:1px solid var(--border)}' +
-    'th,td{padding:8px 12px;border:1px solid var(--border)}' +
-    'th{background:#f0f0f0;font-size:11px;text-transform:uppercase;text-align:left}' +
-    'hr{border:none;border-top:1px solid var(--border);margin:16px 0}' +
-    '.pill{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:500;background:#eee}' +
-    '</style></head><body>' +
-    printable.innerHTML + '</body></html>'
-  );
-  printWin.document.close();
-  setTimeout(function(){ printWin.print(); }, 400);
+  _openPrintWindow('Proforma Invoice - ' + pi.number, printable.innerHTML);
+}
+function sharePIWhatsApp(id) {
+  var pi = (DB.proformaInvoices||[]).find(function(x){ return x.id===id; }); if (!pi) return;
+  var printable = document.getElementById('pi-printable');
+  if (!printable) { toast('Open the PI first', 'error'); return; }
+  _shareViaWhatsApp('Proforma Invoice - ' + pi.number, printable.innerHTML, 'PI-' + pi.number + '.html');
 }
 function convertPIToInvoice(id) {
   var pi = (DB.proformaInvoices||[]).find(function(x){ return x.id===id; }); if (!pi) return;
@@ -2057,6 +2114,7 @@ function viewInv(id, type) {
     termsHTML;
   modal('Invoice ' + inv.number, '<div id="invoice-printable">' + body + '</div>',
     '<button class="btn btn-ghost" onclick="closeModal()">Close</button>' +
+    '<button class="btn btn-ghost" onclick="shareInvoiceWhatsApp(&quot;' + id + '&quot;,&quot;' + type + '&quot;)"><i class="ti ti-brand-whatsapp" style="color:#25D366"></i>WhatsApp</button>' +
     '<button class="btn btn-primary" onclick="exportInvoicePDF(&quot;' + id + '&quot;,&quot;' + type + '&quot;)"><i class="ti ti-file-export"></i>Export PDF</button>'
   );
 }
@@ -2066,24 +2124,17 @@ function exportInvoicePDF(id, type) {
   var inv = arr.find(function(x){ return x.id===id; }); if (!inv) return;
   var printable = document.getElementById('invoice-printable');
   if (!printable) { toast('Nothing to export', 'error'); return; }
-
-  var printWin = window.open('', '_blank');
-  printWin.document.write(
-    '<html><head><title>' + esc(type==='sales'?'Invoice':'Bill') + ' - ' + esc(inv.number) + '</title>' +
-    '<style>' +
-    ':root{--border:#d0d0d0;--border2:#bbb;--bg3:#f5f5f5;--bg4:#eee;--text:#1a1a1a;--text2:#555;--text3:#888;--accent:#2b5fc4;--green:#1b9e6b;--red:#c0392b;--amber:#b8860b}' +
-    'body{font-family:Arial,sans-serif;padding:30px;color:#1a1a1a}' +
-    'table{width:100%;border-collapse:collapse;border:1px solid var(--border)}' +
-    'th,td{padding:8px 12px;border:1px solid var(--border)}' +
-    'th{background:#f0f0f0;font-size:11px;text-transform:uppercase;text-align:left}' +
-    'hr{border:none;border-top:1px solid var(--border);margin:16px 0}' +
-    '.pill{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:500;background:#eee}' +
-    '</style></head><body>' +
-    printable.innerHTML +
-    '</body></html>'
-  );
-  printWin.document.close();
-  setTimeout(function(){ printWin.print(); }, 400);
+  var title = (type==='sales' ? 'Invoice' : 'Bill') + ' - ' + inv.number;
+  _openPrintWindow(title, printable.innerHTML);
+}
+function shareInvoiceWhatsApp(id, type) {
+  var arr = type === 'sales' ? DB.salesInvoices : DB.purchaseBills;
+  var inv = arr.find(function(x){ return x.id===id; }); if (!inv) return;
+  var printable = document.getElementById('invoice-printable');
+  if (!printable) { toast('Open the invoice first', 'error'); return; }
+  var title = (type==='sales' ? 'Invoice' : 'Bill') + ' - ' + inv.number;
+  var filename = (type==='sales' ? 'Invoice' : 'Bill') + '-' + inv.number + '.html';
+  _shareViaWhatsApp(title, printable.innerHTML, filename);
 }
 
 // ============================================================
@@ -2680,6 +2731,7 @@ function showLedger() {
     '</div>' +
     '<button class="btn btn-ghost" id="add-payment-btn" style="display:none" onclick="openPaymentForm()"><i class="ti ti-plus"></i>Record Payment</button>' +
     '<button class="btn btn-ghost" id="export-ledger-btn" style="display:none" onclick="exportLedgerPDF()"><i class="ti ti-file-export"></i>Export PDF</button>' +
+    '<button class="btn btn-ghost" id="share-ledger-btn" style="display:none" onclick="shareLedgerWhatsApp()"><i class="ti ti-brand-whatsapp" style="color:#25D366"></i>WhatsApp</button>' +
     '</div></div><div id="ledger-detail"></div>';
 }
 function toggleLedgerMode() {
@@ -2702,9 +2754,11 @@ function showLedgerDetail() {
   var el = document.getElementById('ledger-detail');
   var pb = document.getElementById('add-payment-btn');
   var eb = document.getElementById('export-ledger-btn');
-  if (!party) { if(el)el.innerHTML=''; if(pb)pb.style.display='none'; if(eb)eb.style.display='none'; return; }
+  var sb = document.getElementById('share-ledger-btn');
+  if (!party) { if(el)el.innerHTML=''; if(pb)pb.style.display='none'; if(eb)eb.style.display='none'; if(sb)sb.style.display='none'; return; }
   if(pb)pb.style.display='inline-flex';
   if(eb)eb.style.display='inline-flex';
+  if(sb)sb.style.display='inline-flex';
 
   var mode = (document.getElementById('ledger-mode')||{}).value || 'fy';
   var allSales = DB.salesInvoices.filter(function(i){ return sameText(i.party, party.name); });
@@ -2832,27 +2886,23 @@ function exportLedgerPDF() {
   if (!party) { toast('Select a party first', 'error'); return; }
   var ledgerHTML = document.getElementById('ledger-printable');
   if (!ledgerHTML) { toast('Nothing to export', 'error'); return; }
-
-  var printWin = window.open('', '_blank');
-  printWin.document.write(
-    '<html><head><title>Ledger - ' + esc(party.name) + '</title>' +
-    '<style>' +
-    'body{font-family:Arial,sans-serif;padding:30px;color:#1a1a1a}' +
-    'h1{font-size:20px;margin-bottom:2px}' +
-    '.sub{color:#666;font-size:13px;margin-bottom:20px}' +
-    'table{width:100%;border-collapse:collapse;font-size:13px}' +
-    'th,td{border:1px solid #ccc;padding:8px 10px;text-align:left}' +
-    'th{background:#f0f0f0;font-size:11px;text-transform:uppercase}' +
-    '.no-print{display:none!important}' +
-    '@media print{.no-print{display:none!important}}' +
-    '</style></head><body>' +
+  var bodyHTML =
     '<h1>' + esc(DB.settings.company) + '</h1>' +
     '<div class="sub">Party Ledger: <strong>' + esc(party.name) + '</strong></div>' +
-    ledgerHTML.innerHTML +
-    '</body></html>'
-  );
-  printWin.document.close();
-  setTimeout(function(){ printWin.print(); }, 400);
+    ledgerHTML.innerHTML;
+  _openPrintWindow('Ledger - ' + party.name, bodyHTML);
+}
+function shareLedgerWhatsApp() {
+  var id = document.getElementById('ledger-sel').value;
+  var party = DB.parties.find(function(p){ return p.id===id; });
+  if (!party) { toast('Select a party first', 'error'); return; }
+  var ledgerHTML = document.getElementById('ledger-printable');
+  if (!ledgerHTML) { toast('Nothing to export', 'error'); return; }
+  var bodyHTML =
+    '<h1>' + esc(DB.settings.company) + '</h1>' +
+    '<div class="sub">Party Ledger: <strong>' + esc(party.name) + '</strong></div>' +
+    ledgerHTML.innerHTML;
+  _shareViaWhatsApp('Ledger - ' + party.name, bodyHTML, 'Ledger-' + party.name + '.html');
 }
 
 function editPayment(id) {
