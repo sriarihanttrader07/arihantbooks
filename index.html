@@ -1500,7 +1500,8 @@ function exportPIPDF(id) {
   var pi = (DB.proformaInvoices||[]).find(function(x){ return x.id===id; }); if (!pi) return;
   var printable = document.getElementById('pi-printable');
   if (!printable) { toast('Nothing to export', 'error'); return; }
-  _openPrintWindow('Proforma Invoice - ' + pi.number, printable.innerHTML);
+  var saveTitle = pi.number + '-' + Math.round(pi.total||0);
+  _openPrintWindow(saveTitle, printable.innerHTML);
 }
 function convertPIToInvoice(id) {
   var pi = (DB.proformaInvoices||[]).find(function(x){ return x.id===id; }); if (!pi) return;
@@ -2079,7 +2080,7 @@ function exportInvoicePDF(id, type) {
   var inv = arr.find(function(x){ return x.id===id; }); if (!inv) return;
   var printable = document.getElementById('invoice-printable');
   if (!printable) { toast('Nothing to export', 'error'); return; }
-  var title = (type==='sales' ? 'Invoice' : 'Bill') + ' - ' + inv.number;
+  var title = inv.number + '-' + Math.round(inv.total||0);
   _openPrintWindow(title, printable.innerHTML);
 }
 
