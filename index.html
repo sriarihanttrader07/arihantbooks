@@ -450,38 +450,41 @@ function _desktopSyncFlow() {
   driveListFile(GDRIVE_DATA_FILENAME, function(err, file) {
     driveWriteFile(GDRIVE_DATA_FILENAME, file ? file.id : null, DB, function(err2, result) {
       if (err2) { toast('Drive push failed', 'error'); setSyncStatus('Sync failed'); return; }
-      setSyncStatus('Checking for mobile PIs...');
-      driveListFile(GDRIVE_QUEUE_FILENAME, function(err3, qfile) {
-        if (!qfile) {
-          setSyncStatus('Synced ✓ No mobile PIs waiting');
-          toast('Data pushed to Drive. No mobile PIs in queue.');
-          return;
-        }
-        driveReadFile(qfile.id, function(err4, queue) {
-          if (err4 || !queue || !queue.length) {
-            setSyncStatus('Synced ✓ ' + new Date().toLocaleTimeString());
-            toast('Data pushed to Drive.');
-            return;
-          }
-          // Merge PIs from mobile queue into desktop DB
-          var merged = 0, skipped = 0;
-          queue.forEach(function(pi) {
-            var dupe = (DB.proformaInvoices||[]).find(function(x){ return x.number === pi.number; });
-            if (dupe) { skipped++; return; }
-            if (!DB.proformaInvoices) DB.proformaInvoices = [];
-            DB.proformaInvoices.push(pi);
-            merged++;
-          });
-          // Clear the queue on Drive
-          driveWriteFile(GDRIVE_QUEUE_FILENAME, qfile.id, [], function() {
-            saveDB();
-            setSyncStatus('Synced ✓ ' + merged + ' PI(s) merged');
-            toast('Merged ' + merged + ' mobile PI(s).' + (skipped ? ' ' + skipped + ' duplicate(s) skipped.' : ''));
-            if (merged > 0 && document.querySelector('.nav-btn.active[data-page="proforma"]')) {
-              renderProforma();
+      // Also pull from Drive in case mobile pushed updated data (e.g. PI conversions)
+      setSyncStatus('Checking for mobile updates...');
+      driveListFile(GDRIVE_DATA_FILENAME, function(err3, dfile) {
+        if (dfile) {
+          driveReadFile(dfile.id, function(err4, driveDB) {
+            if (!err4 && driveDB && driveDB.salesInvoices) {
+              // Merge any new records from Drive that aren't in local DB
+              var newSales = 0, newPIs = 0;
+              (driveDB.salesInvoices||[]).forEach(function(inv){
+                if (!DB.salesInvoices.find(function(x){ return x.id===inv.id; })) {
+                  DB.salesInvoices.push(inv); newSales++;
+                }
+              });
+              (driveDB.proformaInvoices||[]).forEach(function(pi){
+                if (!DB.proformaInvoices.find(function(x){ return x.id===pi.id; })) {
+                  DB.proformaInvoices.push(pi); newPIs++;
+                }
+              });
+              if (newSales > 0 || newPIs > 0) {
+                saveDB();
+                toast('Synced — pulled ' + newSales + ' new invoice(s), ' + newPIs + ' new PI(s) from mobile.');
+              } else {
+                toast('Data synced to Drive.');
+              }
             }
+            var ts = new Date().toLocaleString();
+            setSyncStatus('Synced \u2713 ' + new Date().toLocaleTimeString());
+            try { localStorage.setItem('arihant_last_sync', ts); } catch(e){}
+            _refreshCurrentPage();
           });
-        });
+        } else {
+          setSyncStatus('Synced \u2713 ' + new Date().toLocaleTimeString());
+          try { localStorage.setItem('arihant_last_sync', new Date().toLocaleString()); } catch(e){}
+          toast('Data pushed to Drive.');
+        }
       });
     });
   });
@@ -503,24 +506,37 @@ function _mobileSyncFlow() {
       if (!DB.counters) DB.counters = {};
       if (!DB.counters.proforma) DB.counters.proforma = 1;
       try { localStorage.setItem(DB_KEY, JSON.stringify(DB)); } catch(e){}
-      setSyncStatus('Pushing mobile PIs...');
-      if (!localPIs.length) {
-        setSyncStatus('Synced ✓ ' + new Date().toLocaleTimeString());
-        toast('Data synced from Drive.'); _refreshCurrentPage(); return;
+
+      function _finishSync(msg) {
+        var ts = new Date().toLocaleTimeString();
+        setSyncStatus('Synced \u2713 ' + ts);
+        try { localStorage.setItem('arihant_last_sync', new Date().toLocaleString()); } catch(e){}
+        toast(msg);
+        _refreshCurrentPage();
       }
-      // Push the mobile PI queue to Drive
-      driveListFile(GDRIVE_QUEUE_FILENAME, function(err3, qfile) {
-        driveReadFile(qfile ? qfile.id : null, function(err4, existing) {
-          var existingQueue = (existing && Array.isArray(existing)) ? existing : [];
-          var merged = existingQueue.concat(localPIs);
-          driveWriteFile(GDRIVE_QUEUE_FILENAME, qfile ? qfile.id : null, merged, function(err5) {
-            if (err5) { toast('Failed to push PIs to Drive', 'error'); return; }
-            _mobileQueue = [];
-            localStorage.setItem('arihant_mobile_queue', JSON.stringify([]));
-            setSyncStatus('Synced ✓ ' + localPIs.length + ' PI(s) pushed');
-            toast('Synced! ' + localPIs.length + ' PI(s) sent to laptop.');
-            _refreshCurrentPage();
+
+      setSyncStatus('Pushing mobile data...');
+      if (!localPIs.length) {
+        // No PI queue — but push full DB in case there were conversions on mobile
+        driveListFile(GDRIVE_DATA_FILENAME, function(err3, dfile) {
+          driveWriteFile(GDRIVE_DATA_FILENAME, dfile ? dfile.id : null, DB, function(err4) {
+            _finishSync('Data synced from Drive.');
           });
+        });
+        return;
+      }
+      // Merge PI queue into DB, push full DB to Drive, then clear the queue
+      localPIs.forEach(function(pi) {
+        var dupe = (DB.proformaInvoices||[]).find(function(x){ return x.number === pi.number; });
+        if (!dupe) { DB.proformaInvoices.push(pi); }
+      });
+      try { localStorage.setItem(DB_KEY, JSON.stringify(DB)); } catch(e){}
+      driveListFile(GDRIVE_DATA_FILENAME, function(err3, dfile) {
+        driveWriteFile(GDRIVE_DATA_FILENAME, dfile ? dfile.id : null, DB, function(err4) {
+          if (err4) { toast('Failed to push data to Drive', 'error'); return; }
+          _mobileQueue = [];
+          localStorage.setItem('arihant_mobile_queue', JSON.stringify([]));
+          _finishSync('Synced! ' + localPIs.length + ' PI(s) pushed to Drive.');
         });
       });
     });
@@ -1542,7 +1558,25 @@ function convertPIToInvoice(id) {
   pi.convertedInvoiceId = inv.id;
   pi.convertedInvoiceNumber = invNumber;
 
-  saveDB(); toast('Converted to Sales Invoice ' + invNumber); redrawPI();
+  saveDB();
+  toast('Converted to Sales Invoice ' + invNumber);
+
+  // On mobile, immediately push full DB to Drive so laptop gets the conversion
+  if (_mobileMode && _driveToken && checkInternet()) {
+    setSyncStatus('Pushing conversion to Drive...');
+    driveListFile(GDRIVE_DATA_FILENAME, function(err, dfile) {
+      driveWriteFile(GDRIVE_DATA_FILENAME, dfile ? dfile.id : null, DB, function(err2) {
+        if (!err2) {
+          setSyncStatus('Conversion synced to Drive \u2713');
+          try { localStorage.setItem('arihant_last_sync', new Date().toLocaleString()); } catch(e) {}
+        } else {
+          setSyncStatus('Sync failed — tap Sync to retry');
+        }
+      });
+    });
+  }
+
+  redrawPI();
 }
 
 function renderSales() {
