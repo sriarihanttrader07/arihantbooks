@@ -164,7 +164,7 @@ body.mobile-mode .mobile-sync-bar{display:flex!important}
   <div class="sidebar">
     <div class="logo">
       <div class="logo-icon">A</div>
-      <div><div class="logo-text">ArihantBooks</div><div class="logo-sub">v1.0 · offline</div></div>
+      <div><div class="logo-text">ArihantBooks</div><div class="logo-sub" id="app-version-label">v1.0 · offline</div></div>
     </div>
     <nav class="nav">
       <div class="nav-section">Overview</div>
@@ -197,7 +197,7 @@ body.mobile-mode .mobile-sync-bar{display:flex!important}
       <div class="page-title" id="page-title">Dashboard</div>
       <div class="topbar-actions" id="topbar-actions"></div>
     </div>
-    <div class="mobile-sync-bar" id="mobile-sync-bar"><span id="sync-status-text"><i class="ti ti-cloud"></i> Not synced yet</span><div style="display:flex;gap:6px"><button class="btn btn-ghost btn-sm" onclick="driveSync()" id="sync-btn"><i class="ti ti-refresh"></i>Sync</button></div></div>    <div class="content" id="content"></div>
+    <div class="mobile-sync-bar" id="mobile-sync-bar"><span id="sync-status-text"><i class="ti ti-cloud"></i> Not synced yet</span><div style="display:flex;gap:6px;align-items:center"><span id="mob-version" style="font-size:10px;color:var(--text3)"></span><button class="btn btn-ghost btn-sm" onclick="driveSync()" id="sync-btn"><i class="ti ti-refresh"></i>Sync</button></div></div>    <div class="content" id="content"></div>
   </div>
 </div>
 
@@ -262,6 +262,7 @@ body.mobile-mode .mobile-sync-bar{display:flex!important}
 // ============================================================
 // DATA
 // ============================================================
+var APP_VERSION = '1.4.0';
 var DB_KEY = 'arihantbooks_v1';
 var SERVER = 'http://localhost:5050';
 var _serverMode = false;
@@ -446,102 +447,167 @@ function driveWriteFile(name, fileId, data, cb) {
 
 // ── DESKTOP sync flow: push full data, pull mobile queue and merge ─────────────
 function _desktopSyncFlow() {
-  setSyncStatus('Pushing data to Drive...');
+  // Correct order: PULL from Drive first → merge → PUSH merged result back
+  setSyncStatus('Pulling from Drive...');
   driveListFile(GDRIVE_DATA_FILENAME, function(err, file) {
-    driveWriteFile(GDRIVE_DATA_FILENAME, file ? file.id : null, DB, function(err2, result) {
-      if (err2) { toast('Drive push failed', 'error'); setSyncStatus('Sync failed'); return; }
-      // Also pull from Drive in case mobile pushed updated data (e.g. PI conversions)
-      setSyncStatus('Checking for mobile updates...');
-      driveListFile(GDRIVE_DATA_FILENAME, function(err3, dfile) {
-        if (dfile) {
-          driveReadFile(dfile.id, function(err4, driveDB) {
-            if (!err4 && driveDB && driveDB.salesInvoices) {
-              // Merge any new records from Drive that aren't in local DB
-              var newSales = 0, newPIs = 0;
-              (driveDB.salesInvoices||[]).forEach(function(inv){
-                if (!DB.salesInvoices.find(function(x){ return x.id===inv.id; })) {
-                  DB.salesInvoices.push(inv); newSales++;
-                }
-              });
-              (driveDB.proformaInvoices||[]).forEach(function(pi){
-                if (!DB.proformaInvoices.find(function(x){ return x.id===pi.id; })) {
-                  DB.proformaInvoices.push(pi); newPIs++;
-                }
-              });
-              if (newSales > 0 || newPIs > 0) {
-                saveDB();
-                toast('Synced — pulled ' + newSales + ' new invoice(s), ' + newPIs + ' new PI(s) from mobile.');
-              } else {
-                toast('Data synced to Drive.');
-              }
-            }
-            var ts = new Date().toLocaleString();
-            setSyncStatus('Synced \u2713 ' + new Date().toLocaleTimeString());
-            try { localStorage.setItem('arihant_last_sync', ts); } catch(e){}
-            _refreshCurrentPage();
-          });
-        } else {
+    if (err) { toast('Drive connection failed', 'error'); setSyncStatus('Sync failed'); return; }
+
+    function _pushAndFinish() {
+      setSyncStatus('Pushing to Drive...');
+      driveListFile(GDRIVE_DATA_FILENAME, function(e2, f2) {
+        driveWriteFile(GDRIVE_DATA_FILENAME, f2 ? f2.id : null, DB, function(e3) {
+          if (e3) { toast('Drive push failed', 'error'); setSyncStatus('Sync failed'); return; }
+          saveDB();
+          var ts = new Date().toLocaleString();
           setSyncStatus('Synced \u2713 ' + new Date().toLocaleTimeString());
-          try { localStorage.setItem('arihant_last_sync', new Date().toLocaleString()); } catch(e){}
-          toast('Data pushed to Drive.');
+          try { localStorage.setItem('arihant_last_sync', ts); } catch(e){}
+          _refreshCurrentPage();
+        });
+      });
+    }
+
+    if (!file) {
+      // No Drive file yet — just push local data
+      toast('No Drive data found — pushing local data');
+      _pushAndFinish();
+      return;
+    }
+
+    driveReadFile(file.id, function(err2, driveDB) {
+      if (err2 || !driveDB) {
+        toast('Failed to read Drive data — pushing local data');
+        _pushAndFinish();
+        return;
+      }
+
+      // Merge: bring in anything from Drive that isn't in local DB
+      var newSales = 0, newPIs = 0, updatedPIs = 0;
+
+      // Merge sales invoices from Drive
+      (driveDB.salesInvoices||[]).forEach(function(inv) {
+        if (!DB.salesInvoices.find(function(x){ return x.id===inv.id; })) {
+          DB.salesInvoices.push(inv); newSales++;
         }
       });
+
+      // Merge proforma invoices — also update status if Drive has a newer status
+      (driveDB.proformaInvoices||[]).forEach(function(dpi) {
+        var local = DB.proformaInvoices.find(function(x){ return x.id===dpi.id; });
+        if (!local) {
+          DB.proformaInvoices.push(dpi); newPIs++;
+        } else if (dpi.status !== local.status) {
+          // Drive has a status update (e.g. Converted) — apply it
+          local.status = dpi.status;
+          local.convertedInvoiceId = dpi.convertedInvoiceId;
+          local.convertedInvoiceNumber = dpi.convertedInvoiceNumber;
+          updatedPIs++;
+        }
+      });
+
+      // Merge purchase bills and payments from Drive
+      (driveDB.purchaseBills||[]).forEach(function(bill) {
+        if (!DB.purchaseBills.find(function(x){ return x.id===bill.id; })) {
+          DB.purchaseBills.push(bill);
+        }
+      });
+      (driveDB.payments||[]).forEach(function(pay) {
+        if (!(DB.payments||[]).find(function(x){ return x.id===pay.id; })) {
+          if (!DB.payments) DB.payments = [];
+          DB.payments.push(pay);
+        }
+      });
+
+      var summary = [];
+      if (newSales) summary.push(newSales + ' new invoice(s)');
+      if (newPIs) summary.push(newPIs + ' new PI(s)');
+      if (updatedPIs) summary.push(updatedPIs + ' PI status update(s)');
+      toast(summary.length ? 'Merged from mobile: ' + summary.join(', ') : 'Data synced to Drive.');
+
+      _pushAndFinish();
     });
   });
 }
 
-// ── MOBILE sync flow: pull full data, push local PI queue ────────────────────
+// ── MOBILE sync flow ──────────────────────────────────────────────────────────
 var _mobileQueue = []; // holds PIs created on mobile, not yet synced
 
 function _mobileSyncFlow() {
-  setSyncStatus('Pulling latest data from Drive...');
+  // Mobile: PULL from Drive first → merge local changes → PUSH merged result
+  setSyncStatus('Pulling from Drive...');
   driveListFile(GDRIVE_DATA_FILENAME, function(err, file) {
-    if (err || !file) { toast('No laptop data found in Drive. Sync from laptop first.', 'error'); setSyncStatus('Sync failed — no data'); return; }
-    driveReadFile(file.id, function(err2, data) {
-      if (err2 || !data) { toast('Failed to read data from Drive', 'error'); setSyncStatus('Sync failed'); return; }
-      // Preserve mobile-created PIs before overwriting DB
+    if (err || !file) {
+      toast('No laptop data in Drive. Sync from laptop first.', 'error');
+      setSyncStatus('Sync failed — sync from laptop first'); return;
+    }
+    driveReadFile(file.id, function(err2, driveDB) {
+      if (err2 || !driveDB) {
+        toast('Failed to read Drive data', 'error'); setSyncStatus('Sync failed'); return;
+      }
+
+      // Start with Drive data as base (laptop is master)
       var localPIs = _mobileQueue.slice();
-      DB = data;
+      var localSalesInvoices = DB.salesInvoices.slice(); // capture local conversions
+      var localPIStatuses = {}; // capture local PI status changes (e.g. Converted)
+      (DB.proformaInvoices||[]).forEach(function(pi){
+        localPIStatuses[pi.id] = { status: pi.status, convertedInvoiceId: pi.convertedInvoiceId, convertedInvoiceNumber: pi.convertedInvoiceNumber };
+      });
+
+      DB = driveDB;
       if (!DB.proformaInvoices) DB.proformaInvoices = [];
       if (!DB.counters) DB.counters = {};
       if (!DB.counters.proforma) DB.counters.proforma = 1;
-      try { localStorage.setItem(DB_KEY, JSON.stringify(DB)); } catch(e){}
 
-      function _finishSync(msg) {
-        var ts = new Date().toLocaleTimeString();
-        setSyncStatus('Synced \u2713 ' + ts);
-        try { localStorage.setItem('arihant_last_sync', new Date().toLocaleString()); } catch(e){}
-        toast(msg);
-        _refreshCurrentPage();
-      }
-
-      setSyncStatus('Pushing mobile data...');
-      if (!localPIs.length) {
-        // No PI queue — but push full DB in case there were conversions on mobile
-        driveListFile(GDRIVE_DATA_FILENAME, function(err3, dfile) {
-          driveWriteFile(GDRIVE_DATA_FILENAME, dfile ? dfile.id : null, DB, function(err4) {
-            _finishSync('Data synced from Drive.');
-          });
-        });
-        return;
-      }
-      // Merge PI queue into DB, push full DB to Drive, then clear the queue
+      // Merge local PI queue (new PIs created on mobile)
+      var addedPIs = 0;
       localPIs.forEach(function(pi) {
-        var dupe = (DB.proformaInvoices||[]).find(function(x){ return x.number === pi.number; });
-        if (!dupe) { DB.proformaInvoices.push(pi); }
+        var dupe = DB.proformaInvoices.find(function(x){ return x.number===pi.number; });
+        if (!dupe) { DB.proformaInvoices.push(pi); addedPIs++; }
       });
+
+      // Merge local sales invoices that came from PI conversions on mobile
+      var addedSales = 0;
+      localSalesInvoices.forEach(function(inv) {
+        var dupe = DB.salesInvoices.find(function(x){ return x.id===inv.id; });
+        if (!dupe) { DB.salesInvoices.push(inv); addedSales++; }
+      });
+
+      // Apply local PI status updates (Converted status set on mobile)
+      Object.keys(localPIStatuses).forEach(function(pid) {
+        var localStatus = localPIStatuses[pid];
+        if (localStatus.status === 'Converted') {
+          var pi = DB.proformaInvoices.find(function(x){ return x.id===pid; });
+          if (pi && pi.status !== 'Converted') {
+            pi.status = 'Converted';
+            pi.convertedInvoiceId = localStatus.convertedInvoiceId;
+            pi.convertedInvoiceNumber = localStatus.convertedInvoiceNumber;
+          }
+        }
+      });
+
       try { localStorage.setItem(DB_KEY, JSON.stringify(DB)); } catch(e){}
-      driveListFile(GDRIVE_DATA_FILENAME, function(err3, dfile) {
-        driveWriteFile(GDRIVE_DATA_FILENAME, dfile ? dfile.id : null, DB, function(err4) {
-          if (err4) { toast('Failed to push data to Drive', 'error'); return; }
+
+      // Push merged DB to Drive
+      setSyncStatus('Pushing to Drive...');
+      driveListFile(GDRIVE_DATA_FILENAME, function(e3, f3) {
+        driveWriteFile(GDRIVE_DATA_FILENAME, f3 ? f3.id : null, DB, function(e4) {
+          if (e4) { toast('Push to Drive failed', 'error'); setSyncStatus('Sync failed'); return; }
+          // Clear PI queue
           _mobileQueue = [];
-          localStorage.setItem('arihant_mobile_queue', JSON.stringify([]));
-          _finishSync('Synced! ' + localPIs.length + ' PI(s) pushed to Drive.');
+          try { localStorage.setItem('arihant_mobile_queue', JSON.stringify([])); } catch(e){}
+          var ts = new Date().toLocaleString();
+          setSyncStatus('Synced \u2713 ' + new Date().toLocaleTimeString());
+          try { localStorage.setItem('arihant_last_sync', ts); } catch(e){}
+          var summary = [];
+          if (addedPIs) summary.push(addedPIs + ' PI(s)');
+          if (addedSales) summary.push(addedSales + ' invoice(s)');
+          toast('Synced!' + (summary.length ? ' Pushed: ' + summary.join(', ') : ''));
+          _refreshCurrentPage();
         });
       });
     });
   });
 }
+
 
 // Auto-push PI queue to Drive when on mobile and online
 function mobilePushPI(pi) {
@@ -3160,6 +3226,12 @@ function doRestore() {
   // ── Step 1: Detect and apply mode IMMEDIATELY (before anything renders) ──
   detectMode();
 
+  // Update version label
+  var vLabel = document.getElementById('app-version-label');
+  if (vLabel) vLabel.textContent = 'v' + APP_VERSION + ' · offline';
+  var mobV = document.getElementById('mob-version');
+  if (mobV) mobV.textContent = 'v' + APP_VERSION;
+
   // ── Step 2: Check if we just came back from a Google OAuth redirect ──
   var justAuthed = _checkOAuthCallback();
   if (justAuthed) {
@@ -3199,6 +3271,8 @@ function doRestore() {
     var lb = document.getElementById('local-badge');
     if (sb) sb.style.display = 'block';
     if (lb) lb.style.display = 'none';
+    var vl = document.getElementById('app-version-label');
+    if (vl) vl.textContent = 'v' + APP_VERSION + ' · server';
     go('dashboard');
     // If we just came back from OAuth, auto-continue the sync
     if (justAuthed) setTimeout(function(){ _continueSync(); }, 500);
