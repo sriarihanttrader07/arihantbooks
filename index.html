@@ -480,48 +480,38 @@ function _desktopSyncFlow() {
         return;
       }
 
-      // Merge: bring in anything from Drive that isn't in local DB
-      var newSales = 0, newPIs = 0, updatedPIs = 0;
+      // Capture pre-merge arrays for summary counting
+      var localArr_sales = DB.salesInvoices.slice();
+      var localArr_pis = DB.proformaInvoices.slice();
 
-      // Merge sales invoices from Drive
-      (driveDB.salesInvoices||[]).forEach(function(inv) {
-        if (!DB.salesInvoices.find(function(x){ return x.id===inv.id; })) {
-          DB.salesInvoices.push(inv); newSales++;
-        }
-      });
+      // Merge using lastModified timestamps — newer version always wins
+      function mergeById(localArr, driveArr) {
+        var merged = localArr.slice();
+        driveArr.forEach(function(driveItem) {
+          var localIdx = merged.findIndex(function(x){ return x.id===driveItem.id; });
+          if (localIdx === -1) {
+            merged.push(driveItem);
+          } else {
+            var localTs = merged[localIdx].lastModified || 0;
+            var driveTs = driveItem.lastModified || 0;
+            if (driveTs > localTs) merged[localIdx] = driveItem;
+          }
+        });
+        return merged;
+      }
 
-      // Merge proforma invoices — also update status if Drive has a newer status
-      (driveDB.proformaInvoices||[]).forEach(function(dpi) {
-        var local = DB.proformaInvoices.find(function(x){ return x.id===dpi.id; });
-        if (!local) {
-          DB.proformaInvoices.push(dpi); newPIs++;
-        } else if (dpi.status !== local.status) {
-          // Drive has a status update (e.g. Converted) — apply it
-          local.status = dpi.status;
-          local.convertedInvoiceId = dpi.convertedInvoiceId;
-          local.convertedInvoiceNumber = dpi.convertedInvoiceNumber;
-          updatedPIs++;
-        }
-      });
+      DB.salesInvoices = mergeById(DB.salesInvoices, driveDB.salesInvoices||[]);
+      DB.purchaseBills = mergeById(DB.purchaseBills, driveDB.purchaseBills||[]);
+      DB.proformaInvoices = mergeById(DB.proformaInvoices, driveDB.proformaInvoices||[]);
+      DB.payments = mergeById(DB.payments||[], driveDB.payments||[]);
 
-      // Merge purchase bills and payments from Drive
-      (driveDB.purchaseBills||[]).forEach(function(bill) {
-        if (!DB.purchaseBills.find(function(x){ return x.id===bill.id; })) {
-          DB.purchaseBills.push(bill);
-        }
-      });
-      (driveDB.payments||[]).forEach(function(pay) {
-        if (!(DB.payments||[]).find(function(x){ return x.id===pay.id; })) {
-          if (!DB.payments) DB.payments = [];
-          DB.payments.push(pay);
-        }
-      });
+      var newSales = DB.salesInvoices.length - localArr_sales.length;
+      var newPIs = DB.proformaInvoices.length - localArr_pis.length;
 
       var summary = [];
-      if (newSales) summary.push(newSales + ' new invoice(s)');
-      if (newPIs) summary.push(newPIs + ' new PI(s)');
-      if (updatedPIs) summary.push(updatedPIs + ' PI status update(s)');
-      toast(summary.length ? 'Merged from mobile: ' + summary.join(', ') : 'Data synced to Drive.');
+      if (newSales > 0) summary.push(newSales + ' new invoice(s)');
+      if (newPIs > 0) summary.push(newPIs + ' new PI(s)');
+      toast(summary.length ? 'Merged: ' + summary.join(', ') : 'Data synced to Drive.');
 
       _pushAndFinish();
     });
@@ -557,32 +547,41 @@ function _mobileSyncFlow() {
       if (!DB.counters) DB.counters = {};
       if (!DB.counters.proforma) DB.counters.proforma = 1;
 
-      // Merge local PI queue (new PIs created on mobile)
+      // Same merge logic as desktop — newer lastModified wins
+      function mergeById(localArr, driveArr) {
+        var merged = localArr.slice();
+        driveArr.forEach(function(driveItem) {
+          var localIdx = merged.findIndex(function(x){ return x.id===driveItem.id; });
+          if (localIdx === -1) {
+            merged.push(driveItem);
+          } else {
+            var localTs = merged[localIdx].lastModified || 0;
+            var driveTs = driveItem.lastModified || 0;
+            if (driveTs > localTs) merged[localIdx] = driveItem;
+          }
+        });
+        return merged;
+      }
+
+      // Start with Drive as base, then merge local on top
+      // Local changes have fresh lastModified so they win over Drive's older versions
+      var mergedSales = mergeById(driveDB.salesInvoices||[], localSalesInvoices);
+      var mergedPIs = mergeById(driveDB.proformaInvoices||[], DB.proformaInvoices||[]);
+      var mergedPurchases = mergeById(driveDB.purchaseBills||[], DB.purchaseBills||[]);
+      var mergedPayments = mergeById(driveDB.payments||[], DB.payments||[]);
+
+      // Also merge PI queue (new PIs created on mobile)
       var addedPIs = 0;
       localPIs.forEach(function(pi) {
-        var dupe = DB.proformaInvoices.find(function(x){ return x.number===pi.number; });
-        if (!dupe) { DB.proformaInvoices.push(pi); addedPIs++; }
+        var dupe = mergedPIs.find(function(x){ return x.number===pi.number; });
+        if (!dupe) { mergedPIs.push(pi); addedPIs++; }
       });
 
-      // Merge local sales invoices that came from PI conversions on mobile
-      var addedSales = 0;
-      localSalesInvoices.forEach(function(inv) {
-        var dupe = DB.salesInvoices.find(function(x){ return x.id===inv.id; });
-        if (!dupe) { DB.salesInvoices.push(inv); addedSales++; }
-      });
-
-      // Apply local PI status updates (Converted status set on mobile)
-      Object.keys(localPIStatuses).forEach(function(pid) {
-        var localStatus = localPIStatuses[pid];
-        if (localStatus.status === 'Converted') {
-          var pi = DB.proformaInvoices.find(function(x){ return x.id===pid; });
-          if (pi && pi.status !== 'Converted') {
-            pi.status = 'Converted';
-            pi.convertedInvoiceId = localStatus.convertedInvoiceId;
-            pi.convertedInvoiceNumber = localStatus.convertedInvoiceNumber;
-          }
-        }
-      });
+      DB.salesInvoices = mergedSales;
+      DB.proformaInvoices = mergedPIs;
+      DB.purchaseBills = mergedPurchases;
+      DB.payments = mergedPayments;
+      var addedSales = mergedSales.length - (driveDB.salesInvoices||[]).length;
 
       try { localStorage.setItem(DB_KEY, JSON.stringify(DB)); } catch(e){}
 
@@ -804,7 +803,8 @@ function renderDashboard() {
   var receivable = inv.filter(function(i){ return i.status==='Unpaid'; }).reduce(function(s,i){ return s+(i.total||0); }, 0);
   var payable = pur.filter(function(i){ return i.status==='Unpaid'; }).reduce(function(s,i){ return s+(i.total||0); }, 0);
   var low = DB.items.filter(function(i){ return (i.reorderLevel||0)>0 && i.qty<=i.reorderLevel; });
-  var recent = inv.slice(-6).reverse();
+  var recentSales = inv.slice(-6).reverse();
+  var recentPIs = (DB.proformaInvoices||[]).filter(function(p){ return p.status==='Open'; }).slice(-6).reverse();
 
   var html = '<div class="grid4">';
   html += statCard('Total Sales', fmt(tSales), inv.length + ' invoices', 'bb');
@@ -813,12 +813,15 @@ function renderDashboard() {
   html += statCard('Payable', fmt(payable), 'Outstanding', 'br');
   html += '</div>';
 
-  html += '<div class="grid2">';
+  // Three-column grid: Recent Sales | Recent PIs | Low Stock
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">';
+
+  // Recent Sales
   html += '<div class="tbl-wrap"><div class="tbl-head"><span class="tbl-title">Recent Sales</span>';
   html += '<button class="btn btn-ghost btn-sm" onclick="go(\'sales\')">View all</button></div>';
-  if (recent.length) {
+  if (recentSales.length) {
     html += '<table><thead><tr><th>Invoice</th><th>Party</th><th>Amount</th><th>Status</th></tr></thead><tbody>';
-    recent.forEach(function(i){
+    recentSales.forEach(function(i){
       var cls = i.status === 'Paid' ? 'bg' : 'ba';
       html += '<tr><td class="mono">' + esc(i.number) + '</td><td>' + esc(i.party) + '</td>';
       html += '<td class="mono">' + fmt(i.total) + '</td>';
@@ -828,6 +831,20 @@ function renderDashboard() {
   } else { html += emptyState('ti-receipt', 'No sales yet'); }
   html += '</div>';
 
+  // Recent Open PIs
+  html += '<div class="tbl-wrap"><div class="tbl-head"><span class="tbl-title">Open Proformas</span>';
+  html += '<button class="btn btn-ghost btn-sm" onclick="go(\'proforma\')">View all</button></div>';
+  if (recentPIs.length) {
+    html += '<table><thead><tr><th>PI No.</th><th>Party</th><th>Amount</th></tr></thead><tbody>';
+    recentPIs.forEach(function(i){
+      html += '<tr><td class="mono">' + esc(i.number) + '</td><td>' + esc(i.party) + '</td>';
+      html += '<td class="mono">' + fmt(i.total) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+  } else { html += emptyState('ti-file-description', 'No open PIs'); }
+  html += '</div>';
+
+  // Low Stock
   html += '<div class="tbl-wrap"><div class="tbl-head"><span class="tbl-title">Low Stock Alerts</span>';
   html += '<button class="btn btn-ghost btn-sm" onclick="go(\'inventory\')">View all</button></div>';
   if (low.length) {
@@ -1472,6 +1489,7 @@ function savePI(editId) {
     pi.validUntil = document.getElementById('pi-validity').value;
     pi.notes = document.getElementById('pi-notes').value;
     pi.lines = valid; pi.subtotal = sub; pi.discount = disc; pi.total = total;
+    pi.lastModified = Date.now();
     toast('Proforma invoice updated');
   } else {
     DB.proformaInvoices.push({
@@ -1479,7 +1497,7 @@ function savePI(editId) {
       party: party, validUntil: document.getElementById('pi-validity').value,
       notes: document.getElementById('pi-notes').value,
       lines: valid, subtotal: sub, discount: disc, total: total,
-      status: 'Open'
+      status: 'Open', lastModified: Date.now()
     });
     DB.counters.proforma++;
   }
@@ -1623,6 +1641,8 @@ function convertPIToInvoice(id) {
   pi.status = 'Converted';
   pi.convertedInvoiceId = inv.id;
   pi.convertedInvoiceNumber = invNumber;
+  pi.lastModified = Date.now();
+  inv.lastModified = Date.now();
 
   saveDB();
   toast('Converted to Sales Invoice ' + invNumber);
@@ -1932,6 +1952,7 @@ function saveEditInv(id, type) {
   inv.discount = disc;
   inv.total = total;
   inv.status = payMode === 'Credit' ? 'Unpaid' : 'Paid';
+  inv.lastModified = Date.now();
 
   saveDB(); closeModal(); toast('Updated successfully');
   isSales ? redrawInvFY('sales') : redrawInvFY('purchases');
@@ -2079,7 +2100,8 @@ function saveInv() {
     party: party, payMode: payMode,
     notes: document.getElementById('inv-notes').value,
     lines: valid, subtotal: sub, discount: disc, total: total,
-    status: payMode === 'Credit' ? 'Unpaid' : 'Paid'
+    status: payMode === 'Credit' ? 'Unpaid' : 'Paid',
+    lastModified: Date.now()
   };
   var isSales = invType === 'sales';
   valid.forEach(function(ln){
@@ -2971,6 +2993,7 @@ function saveEditPayment(id) {
   p.amount = newAmount;
   p.mode = document.getElementById('pay-mode').value;
   p.ref = document.getElementById('pay-ref').value;
+  p.lastModified = Date.now();
   if (party) party.balance = p.type==='received' ? (party.balance||0)-p.amount : (party.balance||0)+p.amount;
   saveDB(); closeModal(); toast('Payment updated');
   showLedgerDetail();
@@ -3015,7 +3038,8 @@ function savePayment(partyId) {
     date: document.getElementById('pay-date').value,
     type: type, amount: amount,
     mode: document.getElementById('pay-mode').value,
-    ref: document.getElementById('pay-ref').value
+    ref: document.getElementById('pay-ref').value,
+    lastModified: Date.now()
   });
   party.balance = type==='received' ? (party.balance||0)-amount : (party.balance||0)+amount;
   saveDB(); closeModal(); toast('Payment recorded');
@@ -3092,16 +3116,36 @@ function renderMobile_dashboard() {
   var totalPurch = DB.purchaseBills.reduce(function(s,i){ return s+(i.total||0); },0);
   var openPI = (DB.proformaInvoices||[]).filter(function(p){ return p.status==='Open'; }).length;
   var dataSize = dataSizeKB();
+
+  // Update data size in sync bar
+  var mobV = document.getElementById('mob-version');
+  if (mobV) mobV.textContent = 'v' + APP_VERSION + ' · ' + dataSize + 'KB';
+
   var html = '<div class="grid2" style="gap:10px;margin-bottom:14px">';
-  html += statCard('Total Sales', fmt(totalSales), DB.salesInvoices.length+' invoices', 'bg');
-  html += statCard('Total Purchases', fmt(totalPurch), DB.purchaseBills.length+' bills', 'ba');
-  html += statCard('Open Proformas', openPI, 'awaiting decision', 'bb');
-  html += statCard('Data Size', dataSize+' KB', 'stored locally', 'bp');
+  // Clickable cards — tap to navigate
+  html += '<div class="card" onclick="mobileGo(\'sales\')" style="cursor:pointer">' +
+    '<div class="card-label">Total Sales</div>' +
+    '<div class="card-value">' + fmt(totalSales) + '</div>' +
+    '<span class="badge bb">' + DB.salesInvoices.length + ' invoices</span></div>';
+  html += '<div class="card" onclick="mobileGo(\'proforma\')" style="cursor:pointer">' +
+    '<div class="card-label">Open Proformas</div>' +
+    '<div class="card-value">' + openPI + '</div>' +
+    '<span class="badge bb">tap to view</span></div>';
+  html += '<div class="card" onclick="mobileGo(\'purchases\')" style="cursor:pointer">' +
+    '<div class="card-label">Total Purchases</div>' +
+    '<div class="card-value">' + fmt(totalPurch) + '</div>' +
+    '<span class="badge ba">' + DB.purchaseBills.length + ' bills</span></div>';
+  html += '<div class="card" onclick="mobileGo(\'inventory\')" style="cursor:pointer">' +
+    '<div class="card-label">Inventory</div>' +
+    '<div class="card-value">' + DB.items.length + '</div>' +
+    '<span class="badge ba">items</span></div>';
   html += '</div>';
+
   html += '<div class="card" style="font-size:12px;color:var(--text3);line-height:1.7">';
   html += '<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Sync Status</div>';
-  html += '<div id="dash-sync-status">Tap Sync to get latest data from laptop.</div>';
-  html += '<div style="margin-top:12px;font-size:11px;color:var(--text3)">Last synced: ' + (localStorage.getItem('arihant_last_sync')||'Never') + '</div>';
+  html += '<div>' + ((document.getElementById('sync-status-text')||{}).textContent || 'Tap Sync to get latest data from laptop.') + '</div>';
+  html += '<div style="margin-top:8px;font-size:11px;color:var(--text3)">Last synced: ' + (localStorage.getItem('arihant_last_sync')||'Never') + '</div>';
+  html += '<div style="margin-top:4px;font-size:10px;color:var(--text3)">Data: ' + dataSize + ' KB stored locally</div>';
   html += '</div>';
   document.getElementById('content').innerHTML = html;
 }
