@@ -27,6 +27,7 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;hei
 .nav{flex:1;padding:10px 8px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
 .nav-section{font-size:10px;color:var(--text3);font-weight:500;padding:8px 8px 4px;letter-spacing:.8px;text-transform:uppercase}
 .nav-btn{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--radius2);cursor:pointer;color:var(--text2);font-size:13px;transition:all .15s;border:none;background:none;width:100%;text-align:left}
+.nav-btn i{width:18px;text-align:center;flex-shrink:0}
 .nav-btn:hover{background:var(--bg3);color:var(--text)}
 .nav-btn.active{background:rgba(79,142,247,.15);color:var(--accent)}
 .nav-btn i{font-size:16px;width:18px;flex-shrink:0}
@@ -173,6 +174,7 @@ body.mobile-mode .mobile-sync-bar{display:flex!important}
       <button class="nav-btn" data-page="proforma" onclick="go('proforma')"><i class="ti ti-file-description"></i>Proforma Invoices</button>
       <button class="nav-btn" data-page="sales" onclick="go('sales')"><i class="ti ti-receipt"></i>Sales Invoices</button>
       <button class="nav-btn desktop-only" data-page="purchases" onclick="go('purchases')"><i class="ti ti-shopping-cart"></i>Purchase Bills</button>
+      <button class="nav-btn desktop-only" onclick="openQuickPayment()"><i class="ti ti-cash"></i>Record Payment</button>
       <div class="nav-section">Masters</div>
       <button class="nav-btn" data-page="inventory" onclick="go('inventory')"><i class="ti ti-package"></i>Inventory</button>
       <button class="nav-btn" data-page="parties" onclick="go('parties')"><i class="ti ti-users"></i>Parties</button>
@@ -189,6 +191,7 @@ body.mobile-mode .mobile-sync-bar{display:flex!important}
       <button class="btn btn-ghost" style="width:100%;justify-content:center;font-size:12px;margin-bottom:6px" onclick="exportBackup()"><i class="ti ti-download"></i>Export Backup</button>
       <button class="btn btn-ghost" style="width:100%;justify-content:center;font-size:12px" onclick="openImportBackup()"><i class="ti ti-database-import"></i>Import Backup</button>
       <button class="btn btn-ghost" style="width:100%;justify-content:center;font-size:12px;margin-top:6px" onclick="driveSync()"><i class="ti ti-cloud-upload"></i>Sync to Drive</button>
+      <button class="btn btn-ghost" style="width:100%;justify-content:center;font-size:12px;margin-top:6px" onclick="openNumberSeries()"><i class="ti ti-list-numbers"></i>Number Series</button>
       <button class="btn btn-ghost" style="width:100%;justify-content:center;font-size:11px;margin-top:4px;color:var(--text3)" onclick="toggleMode()"><i class="ti ti-device-mobile"></i>Switch to Mobile View</button>
     </div>
   </div>
@@ -793,9 +796,123 @@ document.addEventListener('click', function(e) {
   }
 });
 
-// ============================================================
-// DASHBOARD
-// ============================================================
+// ── Invoice number generation ─────────────────────────────────────────────────
+// Format: PI2627XXXX where XXXX increments. User can set the starting number
+// in Settings. The prefix PI2627 can be overridden in DB.settings.piPrefix.
+function _numPrefix(type) {
+  if (type === 'pi' || type === 'sales') return DB.settings.piPrefix || 'PI2627';
+  if (type === 'purchase') return DB.settings.billPrefix || 'BILL';
+  return 'JE';
+}
+function _extractSuffix(numStr, prefix) {
+  if (!numStr || !numStr.startsWith(prefix)) return null;
+  var rest = numStr.slice(prefix.length);
+  var n = parseInt(rest, 10);
+  return isNaN(n) ? null : n;
+}
+function nextPINumber() {
+  var prefix = _numPrefix('pi');
+  // Find the highest existing PI number with this prefix
+  var max = 0;
+  (DB.proformaInvoices||[]).forEach(function(pi) {
+    var n = _extractSuffix(pi.number, prefix);
+    if (n !== null && n > max) max = n;
+  });
+  // Also check sales invoices since PI numbers carry over on conversion
+  DB.salesInvoices.forEach(function(inv) {
+    var n = _extractSuffix(inv.number, prefix);
+    if (n !== null && n > max) max = n;
+  });
+  var next = max > 0 ? max + 1 : (DB.counters.proforma || 1);
+  return prefix + String(next);
+}
+function nextInvNumber(type) {
+  if (type === 'sales' || type === 'pi') {
+    var prefix = _numPrefix('sales');
+    var max = 0;
+    DB.salesInvoices.forEach(function(inv) {
+      var n = _extractSuffix(inv.number, prefix);
+      if (n !== null && n > max) max = n;
+    });
+    (DB.proformaInvoices||[]).forEach(function(pi) {
+      var n = _extractSuffix(pi.number, prefix);
+      if (n !== null && n > max) max = n;
+    });
+    var next = max > 0 ? max + 1 : (DB.counters.sales || 1);
+    return prefix + String(next);
+  } else {
+    var billPrefix = _numPrefix('purchase');
+    var billMax = 0;
+    DB.purchaseBills.forEach(function(bill) {
+      var n = _extractSuffix(bill.number, billPrefix);
+      if (n !== null && n > billMax) billMax = n;
+    });
+    var billNext = billMax > 0 ? billMax + 1 : (DB.counters.purchase || 1);
+    return billPrefix + String(billNext);
+  }
+}
+
+function openNumberSeries() {
+  var piPrefix = DB.settings.piPrefix || 'PI2627';
+  var billPrefix = DB.settings.billPrefix || 'BILL';
+  var nextPI = nextPINumber();
+  var nextBill = nextInvNumber('purchase');
+  var body =
+    '<div class="fg"><label>PI & Sales Invoice Prefix</label>' +
+    '<input id="ns-pi-prefix" value="' + esc(piPrefix) + '" style="width:160px" placeholder="e.g. PI2627">' +
+    '<div style="font-size:11px;color:var(--text3);margin-top:4px">Next PI will be: <strong>' + esc(nextPI) + '</strong></div></div>' +
+    '<div class="fg"><label>Purchase Bill Prefix</label>' +
+    '<input id="ns-bill-prefix" value="' + esc(billPrefix) + '" style="width:160px" placeholder="e.g. BILL">' +
+    '<div style="font-size:11px;color:var(--text3);margin-top:4px">Next Bill will be: <strong>' + esc(nextBill) + '</strong></div></div>' +
+    '<hr style="border:none;border-top:1px solid var(--border);margin:16px 0">' +
+    '<div style="font-size:12px;color:var(--text3);margin-bottom:12px">Set last used number to continue a series from a specific point:</div>' +
+    '<div class="form-grid">' +
+    '<div class="fg"><label>Last PI/Sales Invoice No.</label>' +
+    '<input id="ns-last-pi" placeholder="e.g. PI26271228" style="width:180px"></div>' +
+    '<div class="fg"><label>Last Purchase Bill No.</label>' +
+    '<input id="ns-last-bill" placeholder="e.g. BILL0042" style="width:180px"></div>' +
+    '</div>' +
+    '<div style="font-size:11px;color:var(--text3);margin-top:8px">Leave blank to auto-detect from existing records.</div>';
+  modal('Number Series Settings', body,
+    '<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" onclick="saveNumberSeries()">Save</button>'
+  );
+}
+function saveNumberSeries() {
+  var piPrefix = (document.getElementById('ns-pi-prefix').value||'PI2627').trim();
+  var billPrefix = (document.getElementById('ns-bill-prefix').value||'BILL').trim();
+  var lastPI = document.getElementById('ns-last-pi').value.trim();
+  var lastBill = document.getElementById('ns-last-bill').value.trim();
+  DB.settings.piPrefix = piPrefix;
+  DB.settings.billPrefix = billPrefix;
+  if (lastPI) {
+    var suffix = _extractSuffix(lastPI, piPrefix);
+    if (suffix === null) { toast('Cannot read number from "' + lastPI + '" — check prefix matches', 'error'); return; }
+    var exists = (DB.proformaInvoices||[]).find(function(x){ return x.number===lastPI; }) ||
+                  DB.salesInvoices.find(function(x){ return x.number===lastPI; });
+    if (!exists) {
+      DB.proformaInvoices.push({
+        id: uid(), number: lastPI, date: today(), party: '', validUntil: '',
+        notes: 'Series marker', lines: [], subtotal: 0, discount: 0,
+        total: 0, status: 'Cancelled', lastModified: Date.now(), _seriesMarker: true
+      });
+    }
+  }
+  if (lastBill) {
+    var billSuffix = _extractSuffix(lastBill, billPrefix);
+    if (billSuffix === null) { toast('Cannot read number from "' + lastBill + '" — check prefix matches', 'error'); return; }
+    var billExists = DB.purchaseBills.find(function(x){ return x.number===lastBill; });
+    if (!billExists) {
+      DB.purchaseBills.push({
+        id: uid(), number: lastBill, date: today(), party: '', lines: [],
+        subtotal: 0, discount: 0, total: 0, status: 'Paid', lastModified: Date.now(), _seriesMarker: true
+      });
+    }
+  }
+  saveDB(); closeModal();
+  toast('Saved. Next PI: ' + nextPINumber() + ' · Next Bill: ' + nextInvNumber('purchase'));
+}
+
 function renderDashboard() {
   var inv = DB.salesInvoices, pur = DB.purchaseBills;
   var tSales = inv.reduce(function(s,i){ return s + (i.total||0); }, 0);
@@ -1298,7 +1415,7 @@ function renderProforma() {
 }
 function redrawPI() { drawPI(); }
 function drawPI() {
-  var all = (DB.proformaInvoices || []);
+  var all = (DB.proformaInvoices || []).filter(function(x){ return !x._seriesMarker; });
   var fy = (document.getElementById('pi-fy-sel')||{}).value || currentFY();
   var q = ((document.getElementById('pi-search')||{}).value||'').toLowerCase();
   var statusF = (document.getElementById('pi-status-filter')||{}).value||'';
@@ -1348,14 +1465,15 @@ function piRow(i) {
     '<button class="btn btn-danger btn-sm" onclick="deletePI(\'' + i.id + '\')"><i class="ti ti-trash"></i></button>' +
     '</td></tr>';
 }
-function openPIForm(prefillId) {
+function openPIForm(prefillId, defaultParty) {
   var prefill = prefillId ? (DB.proformaInvoices||[]).find(function(x){ return x.id===prefillId; }) : null;
   piLines = prefill ? prefill.lines.map(function(ln){ return { id: uid(), item: ln.item, qty: ln.qty, price: ln.price, amount: ln.amount }; })
                     : [{ id: uid(), item: '', qty: 1, price: 0, amount: 0 }];
-  var num = prefill ? prefill.number : 'PI-' + String(DB.counters.proforma).padStart(4,'0');
+  var num = prefill ? prefill.number : nextPINumber();
   var partyOpts = '<option value="">-- Select --</option>';
   DB.parties.filter(function(p){ return p.type !== 'Supplier'; }).forEach(function(p){
-    partyOpts += '<option' + (prefill && p.name===prefill.party ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+    var sel = (prefill && p.name===prefill.party) || (!prefill && defaultParty && p.name===defaultParty);
+    partyOpts += '<option' + (sel ? ' selected' : '') + '>' + esc(p.name) + '</option>';
   });
   var body =
     '<div class="form-grid" style="margin-bottom:16px">' +
@@ -1502,6 +1620,7 @@ function savePI(editId) {
     DB.counters.proforma++;
   }
   saveDB(); closeModal(); redrawPI();
+  if (document.getElementById('ledger-detail')) showLedgerDetail();
 }
 function editPI(id) { openPIForm(id); }
 function deletePI(id) {
@@ -1608,14 +1727,11 @@ function convertPIToInvoice(id) {
   if (pi.status !== 'Open') { toast('Only Open proforma invoices can be converted', 'error'); return; }
   if (!confirm('Convert "' + pi.number + '" into a real Sales Invoice? This will post it to Sales, update stock and party balance, and mark this PI as Converted.')) return;
 
-  // Re-use the PI's own number for the Sales Invoice number, checking for duplicates first
+  // Keep the PI's own number for the Sales Invoice — same number in both sections
   var invNumber = pi.number;
   var dupe = DB.salesInvoices.find(function(x){ return x.number === invNumber; });
   if (dupe) {
-    invNumber = invNumber + '-INV';
-    var dupe2 = DB.salesInvoices.find(function(x){ return x.number === invNumber; });
-    if (dupe2) invNumber = invNumber + '-' + Date.now().toString(36).slice(-4);
-    toast('Note: "' + pi.number + '" already exists in Sales Invoices — used "' + invNumber + '" instead', 'error');
+    toast('Sales Invoice ' + invNumber + ' already exists — cannot convert', 'error'); return;
   }
 
   var inv = {
@@ -1959,14 +2075,14 @@ function saveEditInv(id, type) {
 }
 
 
-function openInvForm(type, defaultDate) {
+function openInvForm(type, defaultDate, defaultParty) {
   invType = type; invLines = [{ id: uid(), item: '', qty: 1, price: 0, amount: 0 }];
   var isSales = type === 'sales';
-  var num = (isSales ? 'INV' : 'BILL') + '-' + String(isSales ? DB.counters.sales : DB.counters.purchase).padStart(4,'0');
+  var num = nextInvNumber(type);
   var dateVal = defaultDate || today();
   var partyOpts = '<option value="">-- Select --</option>';
   DB.parties.filter(function(p){ return isSales ? p.type!=='Supplier' : p.type!=='Customer'; }).forEach(function(p){
-    partyOpts += '<option>' + esc(p.name) + '</option>';
+    partyOpts += '<option' + (defaultParty && p.name===defaultParty ? ' selected' : '') + '>' + esc(p.name) + '</option>';
   });
   var body =
     '<div class="form-grid" style="margin-bottom:16px">' +
@@ -2093,9 +2209,15 @@ function saveInv() {
   var total = Math.round(sub - disc);
   var roundOff = total - (sub - disc);
   var payMode = document.getElementById('inv-pay').value;
+  var num = document.getElementById('inv-no').value.trim();
+  if (!num) { toast('Invoice number is required', 'error'); return; }
+  // Duplicate check
+  var arr = invType === 'sales' ? DB.salesInvoices : DB.purchaseBills;
+  var dupe = arr.find(function(x){ return x.number === num; });
+  if (dupe) { toast('"' + num + '" already exists — use a different number', 'error'); return; }
   var inv = {
     id: uid(),
-    number: document.getElementById('inv-no').value,
+    number: num,
     date: document.getElementById('inv-date').value,
     party: party, payMode: payMode,
     notes: document.getElementById('inv-notes').value,
@@ -2137,6 +2259,9 @@ function saveInv() {
   else { DB.purchaseBills.push(inv); DB.counters.purchase++; }
   saveDB(); closeModal(); toast('Invoice saved & posted');
   isSales ? redrawInvFY('sales') : redrawInvFY('purchases');
+  // Refresh ledger if visible, or dashboard
+  if (document.getElementById('ledger-detail')) showLedgerDetail();
+  else _refreshCurrentPage();
 }
 function viewInv(id, type) {
   var arr = type === 'sales' ? DB.salesInvoices : DB.purchaseBills;
@@ -2542,15 +2667,20 @@ function showOutstanding() {
   drawOutstanding();
 }
 function computePartyBalance(party) {
-  // EXACT same convention as the Party Ledger (showLedgerDetail): Sales and
-  // Purchases both increase the magnitude outstanding; Payments (regardless of
-  // type) reduce it. The party's own `type` (Customer/Supplier/Both) determines
-  // whether that magnitude means "they owe you" or "you owe them" — the formula
-  // itself doesn't need separate signs for sales vs purchases.
+  // Convention matches the Party Ledger:
+  // Sales Invoice = Debit (they owe you) → positive
+  // Purchase Bill = Credit (you owe them) → negative
+  // Payment received = Credit (reduces what they owe you) → negative
+  // Payment made = Debit (reduces what you owe them) → positive
   var bal = 0;
   DB.salesInvoices.forEach(function(i){ if (sameText(i.party, party.name)) bal += (i.total||0); });
-  DB.purchaseBills.forEach(function(i){ if (sameText(i.party, party.name)) bal += (i.total||0); });
-  (DB.payments||[]).forEach(function(p){ if (sameText(p.party, party.name)) bal -= (p.amount||0); });
+  DB.purchaseBills.forEach(function(i){ if (sameText(i.party, party.name)) bal -= (i.total||0); });
+  (DB.payments||[]).forEach(function(p){
+    if (sameText(p.party, party.name)) {
+      if (p.type === 'paid') bal += (p.amount||0); // payment made reduces your liability
+      else bal -= (p.amount||0); // payment received reduces their liability
+    }
+  });
   return bal;
 }
 function oldestUnpaidDate(party) {
@@ -2798,7 +2928,10 @@ function showLedger() {
     '<div class="fg"><label>To</label><input id="ledger-to" type="date"></div>' +
     '<button class="btn btn-ghost" onclick="showLedgerDetail()"><i class="ti ti-filter"></i>Apply</button>' +
     '</div>' +
-    '<button class="btn btn-ghost" id="add-payment-btn" style="display:none" onclick="openPaymentForm()"><i class="ti ti-plus"></i>Record Payment</button>' +
+    '<button class="btn btn-ghost" id="add-payment-btn" style="display:none" onclick="openPaymentForm()"><i class="ti ti-cash"></i>Record Payment</button>' +
+    '<button class="btn btn-ghost" id="add-pi-btn" style="display:none" onclick="openLedgerPI()"><i class="ti ti-file-description"></i>New PI</button>' +
+    '<button class="btn btn-ghost" id="add-sale-btn" style="display:none" onclick="openLedgerInv(\'sales\')"><i class="ti ti-receipt"></i>New Sale</button>' +
+    '<button class="btn btn-ghost" id="add-purchase-btn" style="display:none" onclick="openLedgerInv(\'purchases\')"><i class="ti ti-shopping-cart"></i>New Purchase</button>' +
     '<button class="btn btn-ghost" id="export-ledger-btn" style="display:none" onclick="exportLedgerPDF()"><i class="ti ti-file-export"></i>Export PDF</button>' +
     '</div></div><div id="ledger-detail"></div>';
 }
@@ -2820,11 +2953,18 @@ function showLedgerDetail() {
   var id = document.getElementById('ledger-sel').value;
   var party = DB.parties.find(function(p){ return p.id===id; });
   var el = document.getElementById('ledger-detail');
-  var pb = document.getElementById('add-payment-btn');
-  var eb = document.getElementById('export-ledger-btn');
-  if (!party) { if(el)el.innerHTML=''; if(pb)pb.style.display='none'; if(eb)eb.style.display='none'; return; }
-  if(pb)pb.style.display='inline-flex';
-  if(eb)eb.style.display='inline-flex';
+  var pb  = document.getElementById('add-payment-btn');
+  var eb  = document.getElementById('export-ledger-btn');
+  var pib = document.getElementById('add-pi-btn');
+  var slb = document.getElementById('add-sale-btn');
+  var prb = document.getElementById('add-purchase-btn');
+  var allBtns = [pb, eb, pib, slb, prb];
+  if (!party) {
+    if(el)el.innerHTML='';
+    allBtns.forEach(function(b){ if(b) b.style.display='none'; });
+    return;
+  }
+  allBtns.forEach(function(b){ if(b) b.style.display='inline-flex'; });
 
   var mode = (document.getElementById('ledger-mode')||{}).value || 'fy';
   var allSales = DB.salesInvoices.filter(function(i){ return sameText(i.party, party.name); });
@@ -2857,9 +2997,13 @@ function showLedgerDetail() {
   // bal += Debit - Credit (Debit increases, Credit decreases — plain magnitude owed)
   var txns=[];
   sales.forEach(function(i){ txns.push({date:i.date,desc:i.number+' - Sales Invoice',dr:i.total,cr:0,tag:'sale',invId:i.id}); });
-  purch.forEach(function(i){ txns.push({date:i.date,desc:i.number+' - Purchase Bill',dr:i.total,cr:0,tag:'purchase',invId:i.id}); });
+  purch.forEach(function(i){ txns.push({date:i.date,desc:i.number+' - Purchase Bill',dr:0,cr:i.total,tag:'purchase',invId:i.id}); });
   pays.forEach(function(p){
-    txns.push({date:p.date,desc:(p.ref?p.ref+' - ':'')+'Payment '+p.mode,dr:0,cr:p.amount,tag:'payment',pid:p.id});
+    var isPaid = p.type === 'paid'; // payment made TO supplier = Debit (reduces liability)
+    txns.push({date:p.date,desc:(p.ref?p.ref+' - ':'')+'Payment '+p.mode,
+      dr: isPaid ? p.amount : 0,
+      cr: isPaid ? 0 : p.amount,
+      tag:'payment',pid:p.id});
   });
   txns.sort(function(a,b){ return a.date.localeCompare(b.date); });
 
@@ -3009,6 +3153,40 @@ function deletePayment(id) {
   showLedgerDetail();
 }
 
+function openLedgerPI() {
+  var id = document.getElementById('ledger-sel').value;
+  var party = DB.parties.find(function(p){ return p.id===id; });
+  if (!party) return;
+  openPIForm(null, party.name);
+}
+function openLedgerInv(type) {
+  var id = document.getElementById('ledger-sel').value;
+  var party = DB.parties.find(function(p){ return p.id===id; });
+  if (!party) return;
+  openInvForm(type, null, party.name);
+}
+function openQuickPayment() {
+  // Payment form from nav sidebar — lets you pick any party
+  var partyOpts = '<option value="">-- Select Party --</option>';
+  DB.parties.forEach(function(p){ partyOpts += '<option value="' + p.id + '">' + esc(p.name) + '</option>'; });
+  modal('Record Payment',
+    '<div class="form-grid">' +
+    '<div class="fg full"><label>Party *</label><select id="qpay-party">' + partyOpts + '</select></div>' +
+    '<div class="fg"><label>Date *</label><input id="pay-date" type="date" value="' + today() + '"></div>' +
+    '<div class="fg"><label>Type *</label><select id="pay-type"><option value="received">Payment Received (from customer)</option><option value="paid">Payment Made (to supplier)</option></select></div>' +
+    '<div class="fg"><label>Amount (₹) *</label><input id="pay-amount" type="number" step="0.01" placeholder="0.00"></div>' +
+    '<div class="fg"><label>Mode</label><select id="pay-mode"><option>Cash</option><option>Bank Transfer</option><option>Cheque</option><option>UPI</option></select></div>' +
+    '<div class="fg full"><label>Reference / Note</label><input id="pay-ref" placeholder="Cheque no, UTR, or note"></div>' +
+    '</div>',
+    '<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" onclick="saveQuickPayment()"><i class="ti ti-check"></i>Save Payment</button>'
+  );
+}
+function saveQuickPayment() {
+  var partyId = document.getElementById('qpay-party').value;
+  if (!partyId) { toast('Select a party', 'error'); return; }
+  savePayment(partyId);
+}
 function openPaymentForm() {
   var id = document.getElementById('ledger-sel').value;
   var party = DB.parties.find(function(p){ return p.id===id; });
