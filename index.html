@@ -1023,7 +1023,7 @@ function openPartyForm(id) {
       '<option' + (p.type==='Supplier'?' selected':'') + '>Supplier</option>' +
       '<option' + (p.type==='Both'?' selected':'') + '>Both</option>' +
     '</select></div>' +
-    '<div class="fg"><label>Phone</label><input id="p-phone" value="' + esc(p.phone||'') + '" placeholder="Mobile / WhatsApp"></div>' +
+    '<div class="fg"><label>Phone</label><input id="p-phone" value="' + esc(p.phone||'') + '" placeholder="Mobile number"></div>' +
     '<div class="fg"><label>Email</label><input id="p-email" value="' + esc(p.email||'') + '" placeholder="Email"></div>' +
     '<div class="fg"><label>Opening Balance (\u20B9)</label><input id="p-bal" type="number" value="' + (p.balance||0) + '"></div>' +
     '<div class="fg full"><label>Address</label><textarea id="p-addr">' + esc(p.address||'') + '</textarea></div>' +
@@ -1041,7 +1041,8 @@ function saveParty(id) {
     phone: document.getElementById('p-phone').value,
     email: document.getElementById('p-email').value,
     balance: parseFloat(document.getElementById('p-bal').value) || 0,
-    address: document.getElementById('p-addr').value
+    address: document.getElementById('p-addr').value,
+    lastModified: Date.now()
   };
   if (id) {
     var idx = DB.parties.findIndex(function(x){ return x.id===id; });
@@ -1233,7 +1234,8 @@ function saveItem(id) {
     reorderLevel: parseFloat(document.getElementById('it-reorder').value) || 0,
     costPrice: parseFloat(document.getElementById('it-cost').value) || 0,
     salePrice: parseFloat(document.getElementById('it-sale').value) || 0,
-    description: document.getElementById('it-desc').value
+    description: document.getElementById('it-desc').value,
+    lastModified: Date.now()
   };
   if (id) { var idx = DB.items.findIndex(function(x){ return x.id===id; }); DB.items[idx] = it; }
   else { DB.items.push(it); }
@@ -3362,6 +3364,46 @@ function mobileExportSalesPrompt() {
 }
 
 // Mobile ledger shortcut from reports
+function renderMobile_parties() {
+  document.getElementById('topbar-actions').innerHTML = '';
+  var html = '<div style="padding:12px">';
+  if (!DB.parties.length) {
+    html += emptyState('ti-users', 'No parties yet');
+  } else {
+    DB.parties.forEach(function(p) {
+      var bc = p.type === 'Customer' ? 'bb' : p.type === 'Supplier' ? 'ba' : 'bp';
+      var balColor = (p.balance||0) >= 0 ? 'var(--green)' : 'var(--red)';
+      html += '<div style="background:var(--surface2);border-radius:var(--radius2);padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:12px">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-weight:600;font-size:14px;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(p.name) + '</div>' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+            '<span class="pill ' + bc + '" style="font-size:10px">' + esc(p.type) + '</span>' +
+            (p.phone ? '<span style="font-size:12px;color:var(--text3)">' + esc(p.phone) + '</span>' : '') +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0">' +
+          '<span class="mono" style="font-size:13px;font-weight:600;color:' + balColor + '">' + fmt(p.balance||0) + '</span>' +
+          '<button class="btn btn-ghost btn-sm" onclick="mobileOpenLedger(\'' + p.id + '\')">' +
+            '<i class="ti ti-book"></i>Ledger</button>' +
+        '</div>' +
+      '</div>';
+    });
+  }
+  html += '</div>';
+  document.getElementById('content').innerHTML = html;
+}
+function mobileOpenLedger(partyId) {
+  mobileGo('reports');
+  setTimeout(function() {
+    var tabs = document.querySelectorAll('.tab-btn');
+    tabs.forEach(function(t){ if (t.textContent.trim() === 'Party Ledger') t.click(); });
+    setTimeout(function() {
+      var sel = document.getElementById('ledger-sel');
+      if (sel) { sel.value = partyId; showLedgerDetail(); }
+    }, 80);
+  }, 80);
+}
+
 function renderMobile_reports() {
   renderReports(); // Reports are already read-only, reuse desktop version
 }
@@ -3392,20 +3434,28 @@ function exportBackup() {
 
 function openImportBackup() {
   modal('Import Backup',
-    '<div style="background:var(--bg3);border-radius:var(--radius2);padding:14px;margin-bottom:16px;font-size:13px;color:var(--text2);line-height:1.8">' +
-    '<strong style="color:var(--red)"><i class="ti ti-alert-triangle"></i> Warning:</strong> This will <strong>replace all current data</strong> with the backup. This cannot be undone.' +
-    '</div>' +
     '<div style="border:2px dashed var(--border2);border-radius:var(--radius);padding:24px;text-align:center;cursor:pointer" onclick="document.getElementById(\'restore-file\').click()">' +
     '<i class="ti ti-database-import" style="font-size:32px;color:var(--text3);display:block;margin-bottom:8px"></i>' +
     '<p style="font-size:13px;color:var(--text2);margin-bottom:12px">Select your backup .json file</p>' +
     '<button class="btn btn-ghost" onclick="event.stopPropagation();document.getElementById(\'restore-file\').click()"><i class="ti ti-upload"></i>Choose File</button>' +
     '<input type="file" id="restore-file" accept=".json" style="display:none" onchange="previewRestore(event)">' +
     '</div>' +
-    '<div id="restore-preview" style="margin-top:14px"></div>',
+    '<div id="restore-preview" style="margin-top:14px"></div>' +
+    '<div id="restore-mode-wrap" style="display:none;margin-top:14px">' +
+    '<p style="font-size:12px;color:var(--text2);margin-bottom:8px;font-weight:500">How do you want to import?</p>' +
+    '<div style="display:flex;gap:10px">' +
+    '<label style="flex:1;cursor:pointer;display:flex;align-items:flex-start;gap:8px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius2);padding:12px;font-size:13px;color:var(--text)">' +
+    '<input type="radio" name="restore-mode" value="merge" checked style="margin-top:2px;width:auto;flex-shrink:0"> ' +
+    '<span><strong>Merge</strong><br><span style="color:var(--text2);font-size:12px">Add backup records to existing data. Newer version of each record wins.</span></span></label>' +
+    '<label style="flex:1;cursor:pointer;display:flex;align-items:flex-start;gap:8px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius2);padding:12px;font-size:13px;color:var(--text)">' +
+    '<input type="radio" name="restore-mode" value="replace" style="margin-top:2px;width:auto;flex-shrink:0"> ' +
+    '<span><strong>Replace</strong><br><span style="color:var(--text2);font-size:12px">Erase all current data and restore from backup. Cannot be undone.</span></span></label>' +
+    '</div></div>',
     '<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>' +
-    '<button class="btn btn-danger" id="restore-confirm-btn" style="display:none" onclick="doRestore()"><i class="ti ti-database-import"></i>Restore Backup</button>'
+    '<button class="btn btn-primary" id="restore-confirm-btn" style="display:none" onclick="doRestore()"><i class="ti ti-database-import"></i>Import</button>'
   );
 }
+
 
 var restoreData = null;
 function previewRestore(e) {
@@ -3422,7 +3472,8 @@ function previewRestore(e) {
       document.getElementById('restore-preview').innerHTML =
         '<div style="background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.25);border-radius:var(--radius2);padding:12px 14px;font-size:13px">' +
         '<i class="ti ti-circle-check" style="color:var(--green)"></i> Valid backup found<br>' +
-        '<span style="color:var(--text2)">' + parties + ' parties &nbsp;·&nbsp; ' + items + ' items &nbsp;·&nbsp; ' + inv + ' invoices &nbsp;·&nbsp; ' + pur + ' bills</span></div>';
+        '<span style="color:var(--text2)">' + parties + ' parties \u00b7 ' + items + ' items \u00b7 ' + inv + ' invoices \u00b7 ' + pur + ' bills</span></div>';
+      document.getElementById('restore-mode-wrap').style.display = 'block';
       document.getElementById('restore-confirm-btn').style.display = 'inline-flex';
     } catch(err) {
       document.getElementById('restore-preview').innerHTML =
@@ -3433,11 +3484,21 @@ function previewRestore(e) {
 }
 function doRestore() {
   if (!restoreData) return;
-  if (!confirm('Are you sure? All current data will be replaced.')) return;
-  DB = restoreData;
+  var modeEl = document.querySelector('input[name="restore-mode"]:checked');
+  var mode = modeEl ? modeEl.value : 'replace';
+  if (mode === 'replace') {
+    if (!confirm('Are you sure? All current data will be replaced.')) return;
+    DB = restoreData;
+  } else {
+    var keys = ['items','parties','accounts','salesInvoices','purchaseBills','proformaInvoices','payments','journalEntries'];
+    keys.forEach(function(k) {
+      DB[k] = mergeById(DB[k]||[], restoreData[k]||[]);
+    });
+    rebuildLedgersAndStock();
+  }
   saveDB();
   closeModal();
-  toast('Backup restored successfully');
+  toast(mode === 'merge' ? 'Backup merged successfully' : 'Backup restored successfully');
   go('dashboard');
 }
 
