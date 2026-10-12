@@ -10,11 +10,11 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#0f1117;--bg2:#161b25;--bg3:#1e2535;--bg4:#252d40;
-  --border:#2a3349;--border2:#3a4560;
-  --text:#e8ecf4;--text2:#8a96b0;--text3:#5a6480;
-  --accent:#4f8ef7;--accent2:#3a7aed;
-  --green:#34d399;--red:#f87171;--amber:#fbbf24;--purple:#a78bfa;
+  --bg:#f4f6fb;--bg2:#ffffff;--bg3:#f0f2f8;--bg4:#e8eaf2;
+  --border:#dde1ee;--border2:#c8ccdc;
+  --text:#1a1e2e;--text2:#5a6080;--text3:#9098b8;
+  --accent:#3b74e0;--accent2:#2a62cc;
+  --green:#16a34a;--red:#dc2626;--amber:#d97706;--purple:#7c3aed;
   --radius:10px;--radius2:6px;
 }
 body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;height:100vh;overflow:hidden;display:flex}
@@ -1004,8 +1004,9 @@ function renderParties() {
       html += '<td><span class="pill ' + bc + '">' + esc(p.type) + '</span></td>';
       html += '<td>' + esc(p.phone || '—') + '</td>';
       html += '<td class="mono" style="color:' + balColor + '">' + fmt(p.balance||0) + '</td>';
-      html += '<td><button class="btn btn-ghost btn-sm" style="margin-right:4px" onclick="openPartyForm(\'' + p.id + '\')"><i class="ti ti-edit"></i></button>';
-      html += '<button class="btn btn-danger btn-sm" onclick="deleteParty(\'' + p.id + '\')"><i class="ti ti-trash"></i></button></td>';
+      html += '<td style="display:flex;gap:4px"><button class="btn btn-ghost btn-sm" onclick="viewPartyLedger(\'' + p.id + '\')"><i class="ti ti-eye"></i></button>' +
+             '<button class="btn btn-ghost btn-sm" onclick="openPartyForm(\'' + p.id + '\')"><i class="ti ti-edit"></i></button>' +
+             '<button class="btn btn-danger btn-sm" onclick="deleteParty(\'' + p.id + '\')"><i class="ti ti-trash"></i></button></td>';
       html += '</tr>';
     });
     html += '</tbody></table>';
@@ -1060,6 +1061,17 @@ function saveParty(id) {
   else { DB.parties.push(p); }
   saveDB(); closeModal(); if (id ? false : true) toast('Party saved'); renderParties();
 }
+function viewPartyLedger(id) {
+  go('reports');
+  setTimeout(function() {
+    var tabs = document.querySelectorAll('.tab-btn');
+    tabs.forEach(function(t){ if (t.textContent.trim()==='Party Ledger') t.click(); });
+    setTimeout(function() {
+      var sel = document.getElementById('ledger-sel');
+      if (sel) { sel.value = id; showLedgerDetail(); }
+    }, 80);
+  }, 80);
+}
 function deleteParty(id) {
   if (!confirm('Delete this party?')) return;
   DB.parties = DB.parties.filter(function(x){ return x.id !== id; });
@@ -1109,8 +1121,9 @@ function renderInventory() {
       html += '<td class="mono">' + fmt(i.salePrice||0) + '</td>';
       html += '<td class="mono">' + fmt(i.qty*(i.costPrice||0)) + '</td>';
       html += '<td onclick="viewItemDetail(\'' + i.id + '\')" style="cursor:pointer;color:var(--accent);font-size:12px"><i class="ti ti-chart-bar"></i></td>';
-      html += '<td><button class="btn btn-ghost btn-sm" style="margin-right:4px" onclick="event.stopPropagation();openItemForm(\'' + i.id + '\')"><i class="ti ti-edit"></i></button>';
-      html += '<button class="btn btn-danger btn-sm" onclick="deleteItem(\'' + i.id + '\')"><i class="ti ti-trash"></i></button></td>';
+      html += '<td style="display:flex;gap:4px"><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();viewItemDetail(\'' + i.id + '\')"><i class="ti ti-eye"></i></button>' +
+             '<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openItemForm(\'' + i.id + '\')"><i class="ti ti-edit"></i></button>' +
+             '<button class="btn btn-danger btn-sm" onclick="deleteItem(\'' + i.id + '\')"><i class="ti ti-trash"></i></button></td>';
       html += '</tr>';
     });
     html += '</tbody></table>';
@@ -2356,8 +2369,9 @@ function renderCOA() {
       html += '<td class="mono">' + fmt(a.balance||0) + '</td>';
       html += '<td>';
       if (!a.system) {
-        html += '<button class="btn btn-ghost btn-sm" style="margin-right:4px" onclick="openAccForm(\'' + a.id + '\')"><i class="ti ti-edit"></i></button>';
-        html += '<button class="btn btn-danger btn-sm" onclick="deleteAcc(\'' + a.id + '\')"><i class="ti ti-trash"></i></button>';
+        html += '<div style="display:flex;gap:4px"><button class="btn btn-ghost btn-sm" onclick="viewAccDetail(\'' + a.id + '\')"><i class="ti ti-eye"></i></button>';
+        html += '<button class="btn btn-ghost btn-sm" onclick="openAccForm(\'' + a.id + '\')"><i class="ti ti-edit"></i></button>';
+        html += '<button class="btn btn-danger btn-sm" onclick="deleteAcc(\'' + a.id + '\')"><i class="ti ti-trash"></i></button></div>';
       } else { html += '—'; }
       html += '</td></tr>';
     });
@@ -2387,6 +2401,25 @@ function saveAcc(id) {
   if (id) { var idx = DB.accounts.findIndex(function(x){ return x.id===id; }); DB.accounts[idx] = Object.assign({}, DB.accounts[idx], a); }
   else { DB.accounts.push(a); }
   saveDB(); closeModal(); toast('Account saved'); renderCOA();
+}
+function viewAccDetail(id) {
+  var a = DB.accounts.find(function(x){ return x.id===id; });
+  if (!a) return;
+  var txns = [];
+  DB.journalEntries.forEach(function(je){
+    (je.lines||[]).forEach(function(l){
+      if (l.account === a.name) txns.push({date:je.date, narration:je.narration, dr:l.dr||0, cr:l.cr||0});
+    });
+  });
+  var html = '<div style="margin-bottom:12px;font-size:13px;color:var(--text2)">Type: <strong style="color:var(--text)">' + esc(a.type) + '</strong>' + (a.group ? '&nbsp;·&nbsp;Group: <strong style="color:var(--text)">' + esc(a.group) + '</strong>' : '') + '&nbsp;·&nbsp;Balance: <strong style="color:var(--accent)">' + fmt(a.balance||0) + '</strong></div>';
+  if (txns.length) {
+    html += '<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="padding:8px;text-align:left;border-bottom:1px solid var(--border);color:var(--text3)">Date</th><th style="padding:8px;text-align:left;border-bottom:1px solid var(--border);color:var(--text3)">Narration</th><th style="padding:8px;text-align:right;border-bottom:1px solid var(--border);color:var(--text3)">Dr</th><th style="padding:8px;text-align:right;border-bottom:1px solid var(--border);color:var(--text3)">Cr</th></tr></thead><tbody>';
+    txns.forEach(function(t){
+      html += '<tr><td style="padding:8px;border-bottom:1px solid var(--border)">' + esc(t.date) + '</td><td style="padding:8px;border-bottom:1px solid var(--border)">' + esc(t.narration||'—') + '</td><td style="padding:8px;text-align:right;border-bottom:1px solid var(--border);font-family:DM Mono,monospace">' + (t.dr ? fmt(t.dr) : '—') + '</td><td style="padding:8px;text-align:right;border-bottom:1px solid var(--border);font-family:DM Mono,monospace">' + (t.cr ? fmt(t.cr) : '—') + '</td></tr>';
+    });
+    html += '</tbody></table>';
+  } else { html += '<p style="color:var(--text3);font-size:13px">No journal entries for this account.</p>'; }
+  modal(esc(a.name) + ' — Account Detail', html, '<button class="btn btn-ghost" onclick="closeModal()">Close</button>' + '<button class="btn btn-primary" onclick="closeModal();openAccForm(&quot;' + id + '&quot;)"><i class="ti ti-edit"></i>Edit</button>', true);
 }
 function deleteAcc(id) {
   if (!confirm('Delete account?')) return;
@@ -3083,7 +3116,11 @@ function showLedgerDetail() {
         '<button class="btn btn-danger btn-sm" onclick="deletePayment(&quot;'+t.pid+'&quot;)"><i class="ti ti-trash"></i></button></td>';
     } else if ((t.tag==='sale' || t.tag==='purchase') && !_mobileMode) {
       var invType = t.tag==='sale' ? 'sales' : 'purchases';
-      row += '<td class="no-print payment-actions"><button class="btn btn-ghost btn-sm" onclick="editInv(&quot;'+t.invId+'&quot;,&quot;'+invType+'&quot;)"><i class="ti ti-edit"></i></button></td>';
+      row += '<td class="no-print payment-actions">' +
+        '<button class="btn btn-ghost btn-sm" onclick="viewInv(&quot;'+t.invId+'&quot;,&quot;'+invType+'&quot;)"><i class="ti ti-eye"></i></button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="editInv(&quot;'+t.invId+'&quot;,&quot;'+invType+'&quot;)"><i class="ti ti-edit"></i></button>' +
+        '<button class="btn btn-danger btn-sm" onclick="deleteInv(&quot;'+t.invId+'&quot;,&quot;'+invType+'&quot;)"><i class="ti ti-trash"></i></button>' +
+        '</td>';
     } else { row += '<td class="no-print"></td>'; }
     row += '</tr>';
     return row;
